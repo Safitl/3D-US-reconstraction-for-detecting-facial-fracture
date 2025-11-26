@@ -80,8 +80,7 @@ def create_mask_from_contour(img_shape, contour):
     return mask
 
 def main():
-    #img_path = 'image_105551296540.png'  # Change this to your ultrasound image path
-    img_path = r'C:\Users\safit\OneDrive\GitHub\3D-US-reconstraction-for-detecting-facial-fracture\Bone Segmentation\Region Growing Segmentation\Interactive-Region-Growing-Segmentation-master\image_105551296540.png'
+    img_path = 'image_105551296540.png'  # Change this to your ultrasound image path
     img = load_image(img_path)
     img = crop_ultrasound_region(img)
     blurred = preprocess_image(img)

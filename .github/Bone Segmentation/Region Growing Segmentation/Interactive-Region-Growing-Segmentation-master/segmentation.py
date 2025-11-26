@@ -27,7 +27,7 @@ class Region_Growing():
 		self.seeds = []
 		self.img = np.array(self.img, dtype=np.uint8)
 		cv2.namedWindow(name, cv2.WINDOW_NORMAL)
-		cv2.setMouseCallback(name, lambda event, x, y, flags, param: self.__on_left_click(event, x, y, flags, param))
+		cv2.setMouseCallback(name, self.__on_left_click)
 		cv2.imshow(name, self.img)
 		cv2.waitKey(0)
 		cv2.destroyAllWindows()
@@ -42,7 +42,7 @@ class Region_Growing():
 			if self.segmentation[curr_pixel[0], curr_pixel[1]]==255: continue # pixel already explored
 			contour = []
 			seg_size = 1
-			mean_seg_value = float(self.img[curr_pixel[0],curr_pixel[1]])
+			mean_seg_value = (self.img[curr_pixel[0],curr_pixel[1]])
 			dist = 0
 			while(dist<self.threshold):
 				# Include current pixel in segmentation
@@ -76,15 +76,14 @@ class Region_Growing():
 		# Display the result 
 		cv2.namedWindow(name, cv2.WINDOW_NORMAL)
 		# Activate mouse click on the image window
-		cv2.setMouseCallback(name, lambda event, x, y, flags, param: self.__on_left_click(event, x, y, flags, param))
+		cv2.setMouseCallback(name, self.__on_left_click)
 		cv2.imshow(name, result)
 		key = cv2.waitKey(0)
 		cv2.destroyAllWindows()
+		# Press "s" to save the segmented result
+		if chr(key)==SAVE: cv2.imwrite(name+'.png', result)
 		# Press "Esc" to if no more seeds are required and end the program
 		if key==ESC_KEY: return
-		# Press "s" to save the segmented result
-		if key != -1 and key == ord(SAVE): 
-			cv2.imwrite(name+'.png', result)
 		# Resegment the image using new seeds
 		self.segment()
 		self.display_and_resegment(name=name)
@@ -110,7 +109,7 @@ class Region_Growing():
 
 
 	def __get_nearest_neighbour(self, contour, mean_seg_value):
-		dist_list = [abs(float(self.img[pixel[0], pixel[1]]) - mean_seg_value) for pixel in contour]
+		dist_list = [abs(self.img[pixel[0], pixel[1]] - mean_seg_value) for pixel in contour]
 		if len(dist_list)==0: return -1, 1000
 		min_dist = min(dist_list)
 		index = dist_list.index(min_dist)
@@ -118,8 +117,9 @@ class Region_Growing():
 
 
 	def is_pixel_inside_image(self, pixel, img_shape):
-		return 0<=pixel[0]<img_shape[0] and 0<=pixel[1]<img_shape[1]
+	    return 0<=pixel[0]<img_shape[0] and 0<=pixel[1]<img_shape[1]
 
-	def __on_left_click(self, event, x, y, flags, param):
+
+def __on_left_click(self, event, x, y, flags, param):
 		if event == cv2.EVENT_LBUTTONDOWN:
 			self.seeds.append((x, y))

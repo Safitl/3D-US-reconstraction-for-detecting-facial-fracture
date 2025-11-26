@@ -5,8 +5,7 @@ import os, sys, getopt
 
 DICOM_IMAGE_EXT = '.dcm'
 OTHER_IMAGE_EXT = ['.jpg','.png', '.jpeg']
-#IMAGE_PATH = 'image_105551296540.png' # Default image path
-IMAGE_PATH = r'C:\Users\safit\OneDrive\GitHub\3D-US-reconstraction-for-detecting-facial-fracture\Bone Segmentation\Region Growing Segmentation\Interactive-Region-Growing-Segmentation-master\image_105551296540.png' # Default image path
+IMAGE_PATH = 'image_105551296540.png' # Default image path
 CONN = 4
 
 def run_region_growing_on_image(image_path):
@@ -65,10 +64,8 @@ def set_cmd_line_arguments():
 	global CONN
 	n_args = len(sys.argv)
 	if n_args==1: 
-		# No command-line arguments provided, use default IMAGE_PATH
-		print("No image path specified. Using default image path.")
-		print("Image Path: {}".format(IMAGE_PATH))
-		return
+		print("No image path specified. TERMINATING!!")
+		sys.exit()
 	argv = sys.argv[1:]
 	opts, args = getopt.getopt(argv,"",["image_path=", "conn="])
 	for opt, arg in opts:
