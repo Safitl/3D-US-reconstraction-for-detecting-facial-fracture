@@ -382,8 +382,8 @@ def main():
     # radius=3 is a good starting point; you can tune to 2–4
     snake_thick = dilation(snake_bin, disk(args.snake_dilate)).astype(np.uint8)
 
-    # Clamp to region-growing prior: only keep pixels that are in BOTH
-    final_bin = (snake_thick & clean_bin).astype(np.uint8)
+    # Keep all cleaned region-growing regions and reinforce with the snake
+    final_bin = ((snake_thick | clean_bin).astype(np.uint8))
 
     # Back to 0/255 for saving
     final_mask = final_bin * 255
