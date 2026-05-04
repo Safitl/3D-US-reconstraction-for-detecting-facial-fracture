@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors
+.cursor/
+.idea/
+
+# Large dataset files (keep locally, not in git)
+Dataset/Patient1/DCM_frames/
+Dataset/Patient1/IMG_frames/
+Dataset/Patient1/Masks/
+
+# Stray output images
+segmentation_mask.png
+*.tmp
