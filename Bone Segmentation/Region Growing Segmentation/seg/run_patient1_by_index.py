@@ -31,6 +31,12 @@ PARAM_SPECS = [
     ("min_area", int, "Cleaning minimum area"),
     ("open_r", int, "Cleaning opening radius"),
     ("close_w", int, "Cleaning closing width"),
+    ("seed_x_band", int, "Per-seed horizontal column window (0 = disabled)"),
+    ("seed_y_band", int, "Per-seed vertical row window (0 = disabled)"),
+    ("seed_y_band_up", int, "Per-seed upward-only row window (0 = uses seed_y_band symmetrically)"),
+    ("pre_snake_dilate", int, "Isotropic pre-snake dilation radius to bridge curved gaps (0 = disabled)"),
+    ("post_trim_up", int, "Post-snake upward trim rows above nearest seed (0 = disabled)"),
+    ("post_trim_down", int, "Post-snake downward trim rows below nearest seed (0 = disabled)"),
 ]
 
 
@@ -179,6 +185,18 @@ def _run_cli(cli_path: Path, image_path: Path, output_mask_path: Path, args: arg
         str(args.open_r),
         "--close_w",
         str(args.close_w),
+        "--seed_x_band",
+        str(args.seed_x_band),
+        "--seed_y_band",
+        str(args.seed_y_band),
+        "--seed_y_band_up",
+        str(args.seed_y_band_up),
+        "--pre_snake_dilate",
+        str(args.pre_snake_dilate),
+        "--post_trim_up",
+        str(args.post_trim_up),
+        "--post_trim_down",
+        str(args.post_trim_down),
     ]
     if args.show:
         cmd.append("--show")
@@ -263,6 +281,51 @@ def _edit_params_interactively(args: argparse.Namespace) -> None:
     print()
 
 
+def _view_seeds(image_path: Path, meta_path: Path) -> None:
+    """Display the cropped scan with saved seed positions overlaid, without running segmentation."""
+    import cv2
+    import matplotlib.pyplot as plt
+
+    if not meta_path.exists():
+        print(f"No saved metadata found: {meta_path}\n")
+        return
+
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Could not load metadata: {e}\n")
+        return
+
+    used_seeds = metadata.get("used_seeds_working", [])
+    if not used_seeds:
+        print("No seeds found in metadata.\n")
+        return
+
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print(f"Could not load image: {image_path}\n")
+        return
+
+    crop_box = metadata.get("crop_box")
+    if crop_box and len(crop_box) == 4:
+        x_min, y_min, x_max, y_max = crop_box
+        img = img[y_min:y_max, x_min:x_max]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.imshow(img, cmap="gray")
+    for i, (row, col) in enumerate(used_seeds):
+        ax.plot(col, row, "s", markersize=6, markerfacecolor="none",
+                markeredgewidth=1.5, markeredgecolor="lime")
+        ax.text(col + 3, row - 3, str(i), color="lime", fontsize=7)
+    ax.set_title(f"{image_path.name}  —  {len(used_seeds)} saved seeds")
+    ax.axis("off")
+    plt.tight_layout()
+    plt.show()
+    plt.close(fig)
+    print()
+
+
 def _resolve_meta_path(mask_path: Path) -> Path:
     return mask_path.with_name(mask_path.stem.replace("_mask", "") + "_meta.json")
 
@@ -321,12 +384,32 @@ def _choose_seed_mode(args: argparse.Namespace, meta_path: Path) -> None:
             print("No saved seed set found for this image. Please enter new seeds.\n")
         return
 
-    if saved_seed_count != args.max_seeds:
+    if saved_seed_count > args.max_seeds:
         print(
             "Saved seed set found, but its size "
-            f"({saved_seed_count}) does not match current max_seeds ({args.max_seeds}). "
-            "Please enter new seeds.\n"
+            f"({saved_seed_count}) exceeds current max_seeds ({args.max_seeds}). "
+            "Please enter new seeds or increase max_seeds.\n"
         )
+        return
+
+    if saved_seed_count < args.max_seeds:
+        n_extra = args.max_seeds - saved_seed_count
+        while True:
+            choice = input(
+                f"Saved seed set found ({saved_seed_count} seeds), but max_seeds={args.max_seeds}. "
+                f"Extend by clicking {n_extra} more seed(s)? [Y/n/new]: "
+                f"\n  Y = load saved seeds + click {n_extra} more"
+                f"\n  n/new = start fresh (click all {args.max_seeds} seeds from scratch)"
+                f"\n> "
+            ).strip().lower()
+            if choice in {"", "y", "yes"}:
+                args.reuse_meta_path = meta_path
+                print(f"Extend mode: reusing {saved_seed_count} seeds from {meta_path}, click {n_extra} more.\n")
+                return
+            if choice in {"n", "no", "new"}:
+                print("Starting fresh — please click all seeds.\n")
+                return
+            print("Please answer y, n, or new.\n")
         return
 
     if saved_crop_box is not None and saved_crop_box != current_crop_box:
@@ -383,6 +466,12 @@ def main() -> int:
     parser.add_argument("--min_area", type=int, default=200)
     parser.add_argument("--open_r", type=int, default=1)
     parser.add_argument("--close_w", type=int, default=25)
+    parser.add_argument("--seed_x_band", type=int, default=0)
+    parser.add_argument("--seed_y_band", type=int, default=0)
+    parser.add_argument("--seed_y_band_up", type=int, default=0)
+    parser.add_argument("--pre_snake_dilate", type=int, default=0)
+    parser.add_argument("--post_trim_up", type=int, default=0)
+    parser.add_argument("--post_trim_down", type=int, default=0)
     parser.add_argument("--snap_window", type=int, default=7)
     parser.add_argument("--snake_dilate", type=int, default=3)
     parser.add_argument("--crop_y_min", type=int, default=100)
@@ -419,7 +508,7 @@ def main() -> int:
         return 1
 
     print(f"Loaded {len(images)} images from: {img_root}")
-    print("Enter an image index to run, 'params' to view settings, 'set <name> <value>' to change one, 'edit' to walk through all settings, or 'q' to quit.\n")
+    print("Enter an image index to run, 'view <index>' to inspect saved seeds, 'params' to view settings, 'set <name> <value>' to change one, 'edit' to walk through all settings, or 'q' to quit.\n")
 
     while True:
         raw = input(f"Index (1..{len(images)} / q): ").strip()
@@ -440,6 +529,22 @@ def main() -> int:
                 continue
             if _set_param(args, parts[1], parts[2]):
                 print(f"Updated {parts[1]} = {_format_value(getattr(args, parts[1]))}\n")
+            continue
+        if s.startswith("view ") or s.startswith("v "):
+            parts = raw.split(maxsplit=1)
+            try:
+                view_idx = int(parts[1])
+            except (IndexError, ValueError):
+                print("Usage: view <index>\n")
+                continue
+            if not (1 <= view_idx <= len(images)):
+                print(f"Index out of range: {view_idx}\n")
+                continue
+            view_name = images[view_idx - 1]
+            view_image_path = img_root / view_name
+            view_mask_path = mask_root / (Path(view_name).stem + "_mask.png")
+            view_meta_path = _resolve_meta_path(view_mask_path)
+            _view_seeds(view_image_path, view_meta_path)
             continue
 
         try:

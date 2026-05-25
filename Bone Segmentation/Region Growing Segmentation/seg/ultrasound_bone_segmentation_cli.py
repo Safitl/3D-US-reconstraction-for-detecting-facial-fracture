@@ -293,10 +293,13 @@ def load_metadata_json(meta_path: str):
         return json.load(meta_file)
 
 
-def load_reusable_seeds(meta_path: str, expected_seed_count: int):
+def load_reusable_seeds(meta_path: str, expected_seed_count: int, extend_mode: bool = False):
     """
     Load reusable seeds from a previous metadata JSON file.
     Returns (clicked_seeds_original, used_seeds_working, seed_source).
+
+    extend_mode=True: relaxes the count check — saved count must be < expected_seed_count.
+    extend_mode=False (default): saved count must equal expected_seed_count exactly.
     """
     metadata = load_metadata_json(meta_path)
     saved_num_seeds = metadata.get("num_seeds")
@@ -305,14 +308,23 @@ def load_reusable_seeds(meta_path: str, expected_seed_count: int):
 
     if saved_num_seeds is None:
         raise ValueError(f"Metadata JSON is missing num_seeds: {meta_path}")
-    if int(saved_num_seeds) != int(expected_seed_count):
-        raise ValueError(
-            f"Saved seed count ({saved_num_seeds}) does not match current max_seeds ({expected_seed_count})."
-        )
-    if len(used_seeds) != int(expected_seed_count):
-        raise ValueError(
-            f"Metadata JSON has {len(used_seeds)} working seeds, expected {expected_seed_count}: {meta_path}"
-        )
+
+    saved_num_seeds = int(saved_num_seeds)
+
+    if extend_mode:
+        if saved_num_seeds >= int(expected_seed_count):
+            raise ValueError(
+                f"Extend mode requires max_seeds ({expected_seed_count}) > saved seed count ({saved_num_seeds})."
+            )
+    else:
+        if saved_num_seeds != int(expected_seed_count):
+            raise ValueError(
+                f"Saved seed count ({saved_num_seeds}) does not match current max_seeds ({expected_seed_count})."
+            )
+        if len(used_seeds) != int(expected_seed_count):
+            raise ValueError(
+                f"Metadata JSON has {len(used_seeds)} working seeds, expected {expected_seed_count}: {meta_path}"
+            )
 
     clicked_original_xy = []
     for point in clicked_original:
@@ -326,50 +338,54 @@ def load_reusable_seeds(meta_path: str, expected_seed_count: int):
             continue
         used_working.append((int(point[0]), int(point[1])))
 
-    if len(used_working) != int(expected_seed_count):
+    if not extend_mode and len(used_working) != int(expected_seed_count):
         raise ValueError(f"Could not recover the expected number of saved seeds from: {meta_path}")
 
     return clicked_original_xy, used_working, "reused_saved_working_seeds"
 
 
-def get_multiple_seeds_from_click(image: np.ndarray, max_seeds: int = MAX_SEEDS_DEFAULT):
+def get_multiple_seeds_from_click(image: np.ndarray, max_seeds: int = MAX_SEEDS_DEFAULT,
+                                   preloaded_seeds=None):
     """
     Let the user click multiple seed points on the image.
-    Returns a list of (row, col) tuples.
+    Returns a list of (row, col) tuples (new clicks only).
+
+    preloaded_seeds: list of (row, col) already saved — shown as green markers,
+    not re-clicked. max_seeds is the number of *additional* seeds to collect.
     """
     seeds = []
+    preloaded_seeds = preloaded_seeds or []
 
     def onclick(event):
-        # ignore clicks outside the axes or without data coords
         if event.xdata is None or event.ydata is None:
             return
         if len(seeds) >= max_seeds:
             return
 
         y, x = int(event.ydata), int(event.xdata)
-        print(f"Seed added: ({y}, {x})")
+        print(f"New seed added: ({y}, {x})")
         seeds.append((y, x))
 
-        # Visual feedback: smaller hollow red circle so you can see the pixel
         ax = event.inaxes
         if ax is not None:
-            ax.plot(
-                x,
-                y,
-                "ro",
-                markersize=3,          # <<< smaller marker
-                markerfacecolor="none",
-                markeredgewidth=0.8,
-            )
+            ax.plot(x, y, "ro", markersize=3, markerfacecolor="none", markeredgewidth=0.8)
             event.canvas.draw_idle()
 
         if len(seeds) >= max_seeds:
             plt.close(event.canvas.figure)
 
-    # slightly larger figure for better precision
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(image, cmap="gray")
-    ax.set_title(f"Click up to {max_seeds} seed points\n(close window to finish)")
+
+    if preloaded_seeds:
+        for row, col in preloaded_seeds:
+            ax.plot(col, row, "gs", markersize=4, markerfacecolor="none", markeredgewidth=0.8)
+        ax.set_title(
+            f"{len(preloaded_seeds)} saved seeds shown (green).\n"
+            f"Click {max_seeds} more seed point(s) (close window to finish)."
+        )
+    else:
+        ax.set_title(f"Click up to {max_seeds} seed points\n(close window to finish)")
 
     cid = fig.canvas.mpl_connect("button_press_event", onclick)
     plt.show()
@@ -497,6 +513,56 @@ def create_mask_from_contour(img_shape, contour) -> np.ndarray:
     mask[rr, cc] = 255
     return mask
 
+def _interp_seed_rows(seeds, width):
+    """Linearly interpolate seed rows across all columns."""
+    sorted_seeds = sorted(seeds, key=lambda s: s[1])
+    seed_cols = np.array([s[1] for s in sorted_seeds], dtype=float)
+    seed_rows = np.array([s[0] for s in sorted_seeds], dtype=float)
+    return np.interp(np.arange(width), seed_cols, seed_rows)
+
+
+def trim_mask_above_seeds(mask_bin, seeds, max_rows_above):
+    """
+    For each image column, erase mask pixels that are more than
+    max_rows_above rows above the interpolated seed row at that column.
+    Seed rows are linearly interpolated between adjacent seeds so the
+    upper boundary follows the bone curve smoothly rather than stepping.
+    Applied after snake refinement to hard-cap upward extent.
+    """
+    if max_rows_above <= 0 or not seeds:
+        return mask_bin
+
+    h, w = mask_bin.shape
+    result = mask_bin.copy()
+    interp_rows = _interp_seed_rows(seeds, w)
+
+    for col in range(w):
+        cutoff_row = max(0, int(interp_rows[col]) - max_rows_above)
+        result[:cutoff_row, col] = 0
+
+    return result
+
+
+def trim_mask_below_seeds(mask_bin, seeds, max_rows_below):
+    """
+    For each image column, erase mask pixels that are more than
+    max_rows_below rows below the interpolated seed row at that column.
+    Symmetric counterpart to trim_mask_above_seeds.
+    """
+    if max_rows_below <= 0 or not seeds:
+        return mask_bin
+
+    h, w = mask_bin.shape
+    result = mask_bin.copy()
+    interp_rows = _interp_seed_rows(seeds, w)
+
+    for col in range(w):
+        cutoff_row = min(h, int(interp_rows[col]) + max_rows_below + 1)
+        result[cutoff_row:, col] = 0
+
+    return result
+
+
 def snap_seeds_to_bright_line(img, seeds, window=5):
     """
     For each seed (y, x), search vertically in [y-window, y+window]
@@ -601,6 +667,51 @@ def main():
         help="Gaussian sigma used for optional final boundary smoothing.",
     )
     parser.add_argument(
+        "--seed_x_band",
+        type=int,
+        default=0,
+        help="Per-seed horizontal window (pixels). Each seed's region-growing result is restricted "
+             "to columns within +/- seed_x_band of that seed's column. 0 = disabled (default).",
+    )
+    parser.add_argument(
+        "--seed_y_band",
+        type=int,
+        default=0,
+        help="Per-seed vertical window (pixels). Each seed's region-growing result is restricted "
+             "to rows within +/- seed_y_band of that seed's row. 0 = disabled (default).",
+    )
+    parser.add_argument(
+        "--seed_y_band_up",
+        type=int,
+        default=0,
+        help="Per-seed upward-only vertical window (pixels). Restricts region-growing to at most "
+             "seed_y_band_up rows ABOVE the seed, independently of the downward limit set by "
+             "seed_y_band. 0 = use seed_y_band symmetrically (default).",
+    )
+    parser.add_argument(
+        "--pre_snake_dilate",
+        type=int,
+        default=0,
+        help="Isotropic dilation radius (disk) applied to the cleaned mask before the snake runs. "
+             "Bridges diagonal gaps along curved bone without adding directional bias. 0 = disabled (default).",
+    )
+    parser.add_argument(
+        "--post_trim_up",
+        type=int,
+        default=0,
+        help="Post-snake upward trim (pixels). For each column, erases final mask pixels more than "
+             "post_trim_up rows above the interpolated seed row. Hard-caps upward extent after snake refinement. "
+             "0 = disabled (default).",
+    )
+    parser.add_argument(
+        "--post_trim_down",
+        type=int,
+        default=0,
+        help="Post-snake downward trim (pixels). For each column, erases final mask pixels more than "
+             "post_trim_down rows below the interpolated seed row. Hard-caps downward extent after snake refinement. "
+             "0 = disabled (default).",
+    )
+    parser.add_argument(
         "--reuse_meta_path",
         type=str,
         default="",
@@ -647,21 +758,45 @@ def main():
 
     # 3) Seed acquisition
     if args.reuse_meta_path:
-        clicked_seeds_original, seeds, seed_source = load_reusable_seeds(
+        saved_meta = load_metadata_json(args.reuse_meta_path)
+        saved_count = int(saved_meta.get("num_seeds", 0))
+        extend_mode = saved_count < args.max_seeds
+
+        clicked_seeds_original, saved_seeds, seed_source = load_reusable_seeds(
             args.reuse_meta_path,
             expected_seed_count=args.max_seeds,
+            extend_mode=extend_mode,
         )
-        clicked_seeds_working = convert_seed_coords_to_working(clicked_seeds_original, crop_box)
-        snapped_from_working = [[int(row), int(col)] for row, col in seeds]
-        print(f"Reusing saved seeds from: {args.reuse_meta_path}")
-        print("Used seeds:", seeds)
+
+        if extend_mode:
+            n_extra = args.max_seeds - saved_count
+            print(f"Extend mode: {saved_count} saved seeds loaded. Click {n_extra} more.")
+            extra_clicked_working = get_multiple_seeds_from_click(
+                pre, max_seeds=n_extra, preloaded_seeds=saved_seeds
+            )
+            if not extra_clicked_working:
+                raise RuntimeError("No additional seeds selected. Aborting.")
+            extra_clicked_original = convert_seed_coords_to_original(extra_clicked_working, crop_box)
+            extra_snapped = snap_seeds_to_bright_line(pre, extra_clicked_working, window=args.snap_window)
+            print("Snapped extra seeds:", extra_snapped)
+
+            seeds = saved_seeds + extra_snapped
+            clicked_seeds_original = clicked_seeds_original + extra_clicked_original
+            clicked_seeds_working = convert_seed_coords_to_working(clicked_seeds_original, crop_box)
+            snapped_from_working = [[int(r), int(c)] for r, c in seeds]
+            seed_source = "extend_saved_plus_new"
+        else:
+            clicked_seeds_working = convert_seed_coords_to_working(clicked_seeds_original, crop_box)
+            snapped_from_working = [[int(row), int(col)] for row, col in saved_seeds]
+            seeds = saved_seeds
+            print(f"Reusing saved seeds from: {args.reuse_meta_path}")
+            print("Used seeds:", seeds)
     else:
         clicked_seeds_working = get_multiple_seeds_from_click(pre, max_seeds=args.max_seeds)
         if not clicked_seeds_working:
             raise RuntimeError("No seeds selected. Aborting segmentation.")
         clicked_seeds_original = convert_seed_coords_to_original(clicked_seeds_working, crop_box)
 
-        # NEW: snap seeds to local bright ridge
         snapped_from_working = [(int(row), int(col)) for row, col in clicked_seeds_working]
         seeds = snap_seeds_to_bright_line(pre, clicked_seeds_working, window=args.snap_window)
         seed_source = "manual_click_plus_snap" if seeds != snapped_from_working else "manual_click"
@@ -671,7 +806,23 @@ def main():
     combined_mask = np.zeros_like(pre, dtype=bool)
     for seed in seeds:
         mask = region_growing(pre, seed, tolerance=args.tolerance)
-        combined_mask |= mask  # logical OR
+        if args.seed_x_band > 0:
+            col = seed[1]
+            x_min = max(0, col - args.seed_x_band)
+            x_max = min(mask.shape[1], col + args.seed_x_band + 1)
+            col_mask = np.zeros_like(mask)
+            col_mask[:, x_min:x_max] = True
+            mask = mask & col_mask
+        if args.seed_y_band > 0 or args.seed_y_band_up > 0:
+            row = seed[0]
+            up = args.seed_y_band_up if args.seed_y_band_up > 0 else args.seed_y_band
+            down = args.seed_y_band if args.seed_y_band > 0 else args.seed_y_band_up
+            y_min = max(0, row - up)
+            y_max = min(mask.shape[0], row + down + 1)
+            row_mask = np.zeros_like(mask)
+            row_mask[y_min:y_max, :] = True
+            mask = mask & row_mask
+        combined_mask |= mask
 
     if args.show:
         plt.figure()
@@ -681,16 +832,18 @@ def main():
         plt.axis("off")
         plt.show()
     # 5) (Optional) mask cleaning.
-    # To re-enable cleaning, uncomment the clean_mask line below and remove the direct cast.
-    # mask_clean = clean_mask(combined_mask, seeds, y_band=args.y_band,
-    #                         min_area=args.min_area, open_r=args.open_r, close_w=args.close_w)
-    mask_clean = (combined_mask.astype(np.uint8) * 255)
+    mask_clean = clean_mask(combined_mask, seeds, y_band=args.y_band,
+                            min_area=args.min_area, open_r=args.open_r, close_w=args.close_w)
     if args.show:
         plt.figure()
         plt.imshow(mask_clean, cmap="gray")
         plt.title("Region growing – cleaned mask")
         plt.axis("off")
         plt.show()
+
+    # 5b) Optional pre-snake dilation — bridges diagonal gaps along curved bone
+    if args.pre_snake_dilate > 0:
+        mask_clean = dilation(mask_clean > 0, disk(args.pre_snake_dilate)).astype(np.uint8) * 255
 
     # 6) Active contour refinement (for all contours in the mask)
     init_list, snake_list = active_contour_refinement_from_mask(
@@ -744,6 +897,10 @@ def main():
         final_bin = opening(final_bin.astype(bool), disk(args.final_open_r)).astype(np.uint8)
     if args.boundary_smooth:
         final_bin = smooth_mask_boundary(final_bin, args.boundary_smooth_sigma)
+    if args.post_trim_up > 0:
+        final_bin = trim_mask_above_seeds(final_bin, seeds, args.post_trim_up)
+    if args.post_trim_down > 0:
+        final_bin = trim_mask_below_seeds(final_bin, seeds, args.post_trim_down)
 
     # Back to 0/255 for saving
     final_mask = final_bin * 255
@@ -768,8 +925,8 @@ def main():
     }
     refinement = {
         "region_growing_used": True,
-        "mask_cleaning_used": False,
-        "mask_cleaning_currently_bypassed": True,
+        "mask_cleaning_used": True,
+        "mask_cleaning_currently_bypassed": False,
         "clean_y_band": args.y_band,
         "clean_min_area": args.min_area,
         "open_disk_radius": args.open_r,
@@ -784,6 +941,12 @@ def main():
         "snake_w_line": args.snake_w_line,
         "snake_w_edge": args.snake_w_edge,
         "snake_dilate_radius": args.snake_dilate,
+        "seed_x_band": args.seed_x_band,
+        "seed_y_band": args.seed_y_band,
+        "seed_y_band_up": args.seed_y_band_up,
+        "pre_snake_dilate": args.pre_snake_dilate,
+        "post_trim_up": args.post_trim_up,
+        "post_trim_down": args.post_trim_down,
         "final_mask_mode": args.final_mask_mode,
         "final_open_radius": args.final_open_r,
         "boundary_smooth": args.boundary_smooth,
