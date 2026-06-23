@@ -723,6 +723,26 @@ def main():
         default="",
         help="Optional path to save a scan-plus-mask overlay PNG. Defaults beside the mask.",
     )
+    parser.add_argument(
+        "--preprocessing_method",
+        type=str,
+        default="baseline",
+        help=(
+            "Preprocessing method to apply instead of the default CLAHE+Gaussian. "
+            "Any method name from preprocessing_api.list_methods() is accepted. "
+            "Default: 'baseline' (CLAHE+Gaussian — existing behaviour unchanged)."
+        ),
+    )
+    parser.add_argument(
+        "--gt_mask_path",
+        type=str,
+        default="",
+        help=(
+            "Optional path to a ground-truth mask PNG. "
+            "When provided, Dice and IoU vs the GT mask are printed after saving. "
+            "With --show, the GT contour is also drawn on the final overlay figure."
+        ),
+    )
 
     args = parser.parse_args()
     crop_box = get_crop_box(args)
@@ -747,12 +767,23 @@ def main():
     img = crop_ultrasound_region(img_full, crop_box)
 
     # 2) Preprocess
-    pre = preprocess_image(img, args.clahe_clip_limit, gaussian_kernel)
+    if args.preprocessing_method and args.preprocessing_method != "baseline":
+        import sys as _sys
+        _prep_dir = str(Path(__file__).resolve().parents[2] / "Preprocessing")
+        if _prep_dir not in _sys.path:
+            _sys.path.insert(0, _prep_dir)
+        from preprocessing_api import preprocess as _ext_preprocess
+        pre = _ext_preprocess(img, args.preprocessing_method)
+        if pre.dtype != np.uint8:
+            pre = (np.clip(pre, 0.0, 1.0) * 255).astype(np.uint8)
+        print(f"Preprocessing method: {args.preprocessing_method}")
+    else:
+        pre = preprocess_image(img, args.clahe_clip_limit, gaussian_kernel)
 
     if args.show:
         plt.figure()
         plt.imshow(pre, cmap="gray")
-        plt.title("Preprocessed (cropped) image")
+        plt.title(f"Preprocessed (cropped) — {args.preprocessing_method}")
         plt.axis("off")
         plt.show()
 
@@ -973,6 +1004,51 @@ def main():
     print(f"Saved segmentation mask to: {output_mask_path}")
     print(f"Saved overlay image to: {saved_overlay_path}")
     print(f"Saved metadata JSON to: {meta_path}")
+
+    # GT comparison (optional)
+    if args.gt_mask_path:
+        gt = cv2.imread(args.gt_mask_path, cv2.IMREAD_GRAYSCALE)
+        if gt is None:
+            print(f"Warning: could not load GT mask from {args.gt_mask_path}")
+        else:
+            pred_b = (final_mask > 0).astype(bool)
+            gt_b   = (gt > 0).astype(bool)
+            tp = int((pred_b &  gt_b).sum())
+            fp = int((pred_b & ~gt_b).sum())
+            fn = int((~pred_b & gt_b).sum())
+            eps  = 1e-8
+            dice = 2 * tp / (2 * tp + fp + fn + eps)
+            iou  = tp / (tp + fp + fn + eps)
+            prec = tp / (tp + fp + eps)
+            rec  = tp / (tp + fn + eps)
+            print(f"\n--- GT comparison ({args.preprocessing_method}) ---")
+            print(f"  Dice      : {dice:.4f}")
+            print(f"  IoU       : {iou:.4f}")
+            print(f"  Precision : {prec:.4f}")
+            print(f"  Recall    : {rec:.4f}")
+
+            if args.show:
+                base_bgr  = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                contours_pred, _ = cv2.findContours(
+                    (final_mask > 0).astype(np.uint8),
+                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE,
+                )
+                contours_gt, _ = cv2.findContours(
+                    (gt > 0).astype(np.uint8),
+                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE,
+                )
+                vis = base_bgr.copy()
+                cv2.drawContours(vis, contours_pred, -1, (0, 0, 220), 2)   # red = prediction
+                cv2.drawContours(vis, contours_gt,   -1, (0, 200, 0), 1)   # green = GT
+                plt.figure(figsize=(7, 7))
+                plt.imshow(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
+                plt.title(
+                    f"{args.preprocessing_method}  |  "
+                    f"Dice={dice:.3f}  IoU={iou:.3f}\n"
+                    f"Red = prediction,  Green = GT"
+                )
+                plt.axis("off")
+                plt.show()
 
 
 if __name__ == "__main__":

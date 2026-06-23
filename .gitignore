@@ -16,10 +16,28 @@ build/
 .cursor/
 .idea/
 
-# Large dataset files (keep locally, not in git)
-Dataset/Patient1/DCM_frames/
-Dataset/Patient1/IMG_frames/
-Dataset/Patient1/Masks/
+# Raw + derived patient data (never commit)
+Dataset/
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/datasets/
+
+# Report figures (kept locally, not in git)
+report_figures/
+
+# Network training results / run outputs
+Bone Segmentation/Deep Learning-Based Segmentation/runs/
+Bone Segmentation/runs/
+Bone Segmentation/Bone Segmentation/
+
+# SAM2Rad large training artifacts (checkpoints, base weights, logs, debug imgs)
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/checkpoints/
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/weights/
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/logs/
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/training_logs/
+Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/debug_*.png
+
+# Generated reconstruction + preprocessing outputs
+3D-Reconstruction/output/
+compare_preprocessing_results/
 
 # Stray output images
 segmentation_mask.png

@@ -1,173 +1,222 @@
 # 3D US Reconstruction — Project Progress
-**Project:** Preprocessing and Bone Segmentation in Facial Ultrasound for Fracture Detection  
+**Project:** Preprocessing, Segmentation and 3D Reconstruction in Facial Ultrasound for Fracture Detection  
 **Student:** Safit Levy | **Supervisor:** Dr. Eli Appelboim  
-**Last updated:** 2026-05-25
+**Last updated:** 2026-06-13  
 
 ---
 
 ## Current status summary
 
-The project is in the preprocessing expansion stage. A physics-aware preprocessing pipeline has been built alongside the existing classical segmentation pipeline. Three preprocessing modules are complete (FFT filters, SVD/PCA denoising, wavelet denoising). Fourier-domain analysis of Patient 1 data has been completed and used to calibrate the filter parameters. `metadata_labeled.csv` has been rebuilt from disk and now contains 44 labeled image-mask pairs (was 26 — stale). The next milestone is Phase 5: unified preprocessing API + comparison driver to measure which preprocessing combination yields the best Dice/IoU on the labeled set, then begin U-Net training.
+**Project 1 is COMPLETE** (report deadline was 2026-06-06).  
+**Project 2 is now active** — sparse 3D reconstruction and CT-guided alignment.
+
+### Project 2 pipeline milestones
+| # | Milestone | Status |
+|---|-----------|--------|
+| 1 | Extract bone surface points from 2D masks → sparse 3D PLY | ✅ Done |
+| 2 | Extract zygomatic arch surface from CT (mesh / point cloud) | ⬜ TODO |
+| 3 | Initial rough alignment + rigid ICP to CT surface | ⬜ TODO |
+| 4 | Quantitative evaluation (mean/median/RMSE/P95 surface distances) | ⬜ TODO |
+| 5 | (Optional) Compare manual vs U-Net vs SAM2Rad masks; Δ sensitivity | ⬜ TODO |
+
+### Milestone 1 results (2026-06-07, v2 refined)
+Script: `3D-Reconstruction/build_point_cloud.py`  
+Test run — Patient 2, scan `image_172731958799`, Δ=1.0 px/frame:
+- **20 frames**, **9,119 bone-surface points** (top_boundary) / 9,066 (skeleton)
+- X (US lateral): 216–799 px | Y (US depth): 224–323 px | Z (sweep): 0–N×Δ
+- Outputs in `3D-Reconstruction/output/` — open PLY in MeshLab / CloudCompare
+
+**Key script parameters:**
+- `--scan_id` — which cine scan to process  
+- `--patient_dir` — Patient1 or Patient2  
+- `--delta D [D ...]` — single or multiple Δ values for sensitivity analysis  
+- `--extraction_method` — `top_boundary` (default) | `all_mask_pixels` | `skeleton`  
+- `--midframe F` — DICOM frame index of sweep turnaround; folds forward+backward sweeps  
+- `--qc` — generates 5-frame QC figure showing US frame | mask | extracted curve  
+- `--no_ply`, `--no_figure`, `--no_csv` — suppress individual outputs  
+
+**Summary CSV:** `3D-Reconstruction/output/metrics/pointcloud_summary.csv`  
+**QC figures:** `3D-Reconstruction/output/qc/{scan_id}_curve_extraction_qc.png`
 
 ---
 
-## Current blockers
+- **Patient 1**: ~83 frames labeled across 7 scans → training set (some frames re-labeled for consistency in v2)
+- **Patient 2**: 60 frames labeled across 2 scans → validation/test set (expanded from 30 in v1)
+- **Route A (U-Net)**: ✅ Trained and evaluated (v2 run on 143-frame dataset)
+- **Route B (UltraSAM)**: ❌ SKIPPED — too complex to implement within deadline (requires Python 3.8 env + OpenMMLab + COCO conversion, estimated 1–2 days setup)
+- **Route C (SAM2Rad)**: ✅ Trained and evaluated (v2 run on 143-frame dataset)
+- **Report**: Submitted 2026-06-06 (Project 1 complete)
 
-- Need visual quality review of all existing masks before using them for training
-- Phase 5 (preprocessing API + comparison driver) not yet built — can't objectively pick best preprocessing combination yet
-- Need configurable crop parameters before the segmentation pipeline can scale beyond Patient 1
-- ~~Patient 2 availability confirmed~~ Patient 2 exists and is designated as the val/test set — completely untouched until evaluation
+---
+
+## FINAL EVALUATION RESULTS — Patient 2 test set, 60 frames (U-Net v2 + SAM2Rad v3)
+
+Both models trained on the full 143-frame dataset (Patient1=83, Patient2=60) and evaluated with identical metric implementations on all 60 Patient 2 frames. SAM2Rad updated to the v3 run (clean 100-epoch run, validated every epoch).
+
+| Model | Dice | IoU | Precision | Recall | Hausdorff (px) | HD (%diag) | Scale |
+|-------|------|-----|-----------|--------|----------------|------------|-------|
+| **U-Net + Augmentation** | **0.674 ± 0.155** | **0.527 ± 0.160** | **0.648 ± 0.162** | **0.730 ± 0.192** | 128.0 ± 76.5 | 17.7% | 512×512 |
+| **SAM2Rad (epoch 85, v3)** | 0.648 ± 0.158 | 0.498 ± 0.162 | 0.631 ± 0.173 | 0.694 ± 0.177 | **191.3 ± 124.9** | **13.2%** | 1024×1024 |
+
+**Hausdorff normalization note**: Values are in different pixel spaces (512px vs 1024px input). Diagonal: U-Net = 724 px, SAM2Rad = 1448 px. When normalized, **SAM2Rad has better spatial boundary accuracy** (13.2% vs 17.7%).
+
+**Run-to-run variance note**: SAM2Rad v2 (epoch 79) scored Dice = 0.6585 and v3 (epoch 85) scored 0.6480 on the same 60 frames. The ~0.01 Dice difference is ≈½ a standard error (per-frame std ≈ 0.158, SEM ≈ 0.020) — statistically indistinguishable. Training is unseeded, so the gap is pure run-to-run variance; both runs use identical architecture/data/hyperparameters. v3 is canonical because it was validated every epoch, so the reported number and the training-curve figure come from the **same** run.
+
+**Result CSV locations:**
+- U-Net (v2): `Deep Learning-Based Segmentation/runs/unet_with_augmentation_v2_20260612_143014/eval_patient2/`
+- SAM2Rad (v3 ep85): `Bone Segmentation/runs/sam2rad_bone_seg_v3_eval_ep85/`
+- SAM2Rad training curves (merged 0–99): `Bone Segmentation/runs/sam2rad_bone_seg_v3_eval_plots/`
+- Overlay figures (image | GT | prediction): in `overlays/` subfolders of each
+- Report figures: `report_figures/fig_metrics_comparison.png`, `fig_65_best_cases.png`, `fig_65_worst_cases.png`
+
+**Key findings:**
+- U-Net ahead on all four region metrics (Dice/IoU/Precision/Recall); SAM2Rad better on normalized Hausdorff (boundary accuracy)
+- Both models achieve Dice in the 0.65–0.67 range — competitive on a dataset of only 83 training frames
+- No overfitting in either model (SAM2Rad: train≈val Dice across the whole run; U-Net+aug: minimal gap)
+- U-Net: 1.9M params trained from scratch; SAM2Rad: 6.2M fine-tuned from 44.1M pretrained
+
+### v1 results (30 frames, for reference only — superseded by v2)
+| Model | Dice | IoU | Precision | Recall | HD (px) | HD (%diag) |
+|-------|------|-----|-----------|--------|---------|------------|
+| U-Net + Augmentation (epoch 47) | 0.678 | 0.532 | 0.658 | 0.714 | 88.9 | 12.3% |
+| SAM2Rad (epoch 59) | 0.671 | 0.522 | 0.645 | 0.717 | 109.6 | 7.6% |
+
+---
+
+## Dataset details (for report)
+
+### Patient 1 (training set)
+- 7 scan files: `image_105551296540`, `image_152993002660`, `image_258976846007`, `image_283536217682`, `image_383229031802`, `image_406314327901`, `image_452503334599`
+- ~83 frames total across all scans
+- Frame types: single-frame DICOMs and multi-frame cine DICOMs
+- All manually labeled using the classical segmentation pipeline
+
+### Patient 2 (validation/test set — never used in training)
+- **60 frames** labeled across 2 scans: `image_172731958799` (20 frames) + `image_441560463491` (10 frames) + additional re-labeled and expanded frames
+- Completely held out until final evaluation
+- **Caveat for report**: Patient 2 serves as both validation (checkpoint selection) and test set due to having only 2 patients — this is unavoidable and must be disclosed
+
+### Image properties
+- Original size: 768×1024 px
+- Crop box applied: y=[100,700], x=[200,800] → 600×600 working region
+- Masks: binary PNG, uint8, values 0 (background) and 255 (bone cortex)
+- Each mask accompanied by meta JSON with seeds, params, crop box
+
+---
+
+## Model details (for report)
+
+### U-Net (Route A) — v2
+- Architecture: 2D U-Net with encoder depth 3 (32→64→128→256 bottleneck)
+- Parameters: ~1.9M total, all trained
+- Input: 512×512 grayscale (1-channel)
+- Loss: 0.5×BCE + 0.5×Dice
+- Optimizer: Adam, lr=0.001, ReduceLROnPlateau (patience=10, factor=0.5)
+- Augmentation: RandomHorizontalFlip(p=0.5), RandomRotation(±15°, p=0.5), RandomBrightnessContrast(p=0.5), GaussianNoise(p=0.3)
+- Training: 100 epochs, batch=4, Patient1 (83 frames)→train, Patient2 (60 frames)→val
+- **v2 best run**: `unet_with_augmentation_v2_20260612_143014`, best epoch **28**, training-time val Dice = 0.6759
+- evaluate.py result on 60 frames: Dice = 0.6742 ± 0.1552
+- Train/val loss gap: minimal (augmentation effectively reduced overfitting)
+
+### SAM2Rad (Route C) — v3 (canonical)
+- Base model: SAM2 Tiny Hiera (Meta), pretrained on SA-1B
+- Fine-tuning strategy: transfer learning — image encoder FROZEN (38M params), only decoder (LoRA adapters, rank=8) + prompt learner + learnable class tokens trained (6.2M params)
+- Learnable prompts: 1 class × 10 tokens × 256 dims (bone_seg class tokens)
+- Input: 1024×1024 RGB (grayscale repeated 3× to match SAM2 input format)
+- Loss: Dice + Focal (weights 1.0 + 10.0) + box regression + object score
+- Optimizer: AdamW, lr=1e-4, CosineAnnealingLR
+- Training: 100 epochs, batch_size=1 + accumulate_grad_batches=4 (effective batch 4; fits 4 GB GPU), Patient1 (83 frames)→train, Patient2 (60 frames)→val
+- Validation cadence: **every epoch** (check_val_every_n_epoch=1) → dense, publishable training curve
+- **v3 best checkpoint** (by training-time val_dice): `model_epoch=85-val_dice=0.69.ckpt`, val_dice=0.6942 (torchmetrics global), evaluate.py Dice = 0.6480 ± 0.1578 on 60 frames
+- Run was resumed once (interrupted at epoch 37 → resumed to 99); checkpoint saving froze at the global-best epoch 85, so `last.ckpt` == epoch 85 (epoch-99 weights not saved — harmless, 85 was best)
+- Metric caveat: checkpoint selected by torchmetrics global Dice, which doesn't perfectly track per-sample Dice; with save_top_k=1 other epochs weren't saved, so the per-sample-optimal epoch can't be verified
+- No overfitting: train Dice ≈ val Dice across the entire 0–99 run (see `sam2rad_bone_seg_v3_eval_plots/dice.png`)
+- SAM2Rad does NOT use the seed points from meta JSONs — it uses learnable class tokens shared across all samples
+- **v2 (superseded reference)**: `sam2rad_bone_seg_v2_eval_ep79`, epoch 79, evaluate.py Dice = 0.6585 ± 0.1486 (validated every 20 epochs). Within noise of v3; kept only as a variance reference.
+- Reproducibility: `pl.seed_everything(seed, workers=True)` added to `train.py` after v3 — future runs are reproducible (v2/v3 were unseeded)
+- CSVLogger added to train.py for future runs (metrics accessible without wandb binary parsing)
 
 ---
 
 ## What's done
 
 ### Infrastructure & Dataset
-- [x] Dataset folder structure defined and in use:
-  ```
-  Dataset/Patient1/DCM_frames/, IMG_frames/, Masks/
-  ```
-- [x] Naming convention established: `image_<id>.png` → `image_<id>_mask.png` + `image_<id>_meta.json`
-- [x] `patient1_image_index.json` exists, mapping original DICOM/cine sources to extracted PNGs
-- [x] `metadata_labeled.csv` rebuilt from disk — now has **44 rows** (was stale at 26)
-- [x] `build_metadata_labeled.py` written and verified against current folder layout
+- [x] Dataset folder structure for Patient 1 and Patient 2
+- [x] `metadata_labeled.csv` — contains all Patient 1 + Patient 2 labeled pairs
+- [x] `build_metadata_labeled.py` — rebuilds CSV from folder structure
+- [x] `dcm_to_png_batch.py` — batch DICOM → PNG extraction
+- [x] `dcm_extract_frames_manual.py` — interactive frame picker from single DICOM
 
 ### Classical Segmentation Pipeline
-- [x] `ultrasound_bone_segmentation_cli.py` implemented and in active use
-  - CLAHE preprocessing (clip=0.01) + Gaussian blur (7×7)
-  - Hard-coded crop: y=[100,700], x=[200,800]
-  - Interactive seed selection (max 5 seeds)
-  - Seed snapping to nearest bright ridge (window=7px)
-  - Region growing via `skimage.segmentation.flood` (tolerance=20)
-  - Active contour (snake) refinement on Sobel edges
-  - Final mask: snake + region-grow combined, dilated (radius=3)
-  - Saves binary PNG (0/255) + meta JSON per mask
-- [x] `run_patient1_by_index.py` — batch runner for Patient 1 frames
+- [x] `ultrasound_bone_segmentation_cli.py` — full parameter set including: `seed_x_band`, `seed_y_band`, `seed_y_band_up`, `pre_snake_dilate`, `post_trim_up`, `post_trim_down`
+- [x] `run_patient1_by_index.py` — `view` command, `--patient_dir` support
 
-### Literature Review
-- [x] Classical freehand 3D US reconstruction (pixel/voxel/function-based methods)
-- [x] Real-time octree reconstruction (Victoria et al. 2023)
-- [x] AI-guided segmentation → 3D reconstruction (Arsenescu et al. 2023) — closest analog to this project
-- [x] Sensorless reconstruction: physics-guided DL (Dou et al. 2024), SPRAO, RapidVol
-- [x] Decision made: staged approach — segmentation first, reconstruction later
+### Dataset Labeling — v2
+- [x] Patient 1: fully labeled (~83 frames, 7 scans); some frames re-labeled for mask consistency
+- [x] Patient 2: **60 frames** labeled across 2 scans (expanded from 30 in v1)
+- [x] `metadata_labeled.csv` rebuilt — 143 entries (Patient1=83, Patient2=60)
 
-### Preprocessing Pipeline (Physics-Aware)
-- [x] **Phase 1 — Fourier domain analysis** (`Notebooks/fourier_analysis.ipynb`)
-  - 2D FFT magnitude spectrum + radial PSD (log-scale, DC-centred)
-  - Patch-based PSD for bone vs background comparison (Hanning-windowed, avoids DC contamination)
-  - Angular power distribution (directional artifact detection)
-  - Data-adaptive LP cutoff via log-log PSD knee detection
-  - Parameters derived: LP=0.1663 cyc/px, BP=0.015–0.0975 cyc/px, dominant artifact angle=93°
-  - Section 11: overlay comparison of all filters on real Patient 1 frames
-- [x] **Phase 2 — FFT-based frequency filters** (`Bone Segmentation/Preprocessing/frequency_filters.py`)
-  - Gaussian LP, HP, BP; directional notch filter
-  - All defaults calibrated from Phase 1 analysis
-  - Unified entry point: `apply_filter(img, method, **kwargs)`
-- [x] **Phase 3 — SVD/PCA denoising** (`Bone Segmentation/Preprocessing/svd_denoising.py`)
-  - Global rank-k SVD and patch-based PCA (overlapping patches, averaged reconstruction)
-  - Rank selection: `rank_from_gap` (elbow) and `rank_from_energy` (cumulative energy)
-  - Diagnostic: `svd_scree` plot with twin-axis log-SV + cumulative energy
-  - Unified entry point: `apply_svd_filter(img, method, **kwargs)`
-- [x] **Phase 4 — Wavelet denoising** (`Bone Segmentation/Preprocessing/wavelet_denoising.py`)
-  - Multi-level 2D DWT (default: db6, 4 levels)
-  - VisuShrink (universal) and BayesShrink (per-sub-band) thresholding
-  - Soft and hard threshold modes; `sigma_scale` multiplier for tuning aggressiveness
-  - Noise std estimated via MAD on finest-scale HH sub-band
-  - Unified entry point: `apply_wavelet_filter(img, method, **kwargs)`
+### Deep Learning — U-Net (Route A) ✓ COMPLETE
+- [x] `dataset.py` — crop-aware, patient/scan filtering
+- [x] `augmentation.py` — online augmentation pipeline
+- [x] `UNet/train.py` — config-driven, all metrics, per-run output dirs
+- [x] `UNet/evaluate.py` — standalone evaluation on any patient split
+- [x] `plot_training.py` — training curve plots
+- [x] **v2 best run (with aug)**: `unet_with_augmentation_v2_20260612_143014` (best epoch 28, val Dice 0.674)
+- [x] **v2 no-aug baseline**: `unet_no_augmentation_v2_20260614_131100` (best epoch 34, val Dice 0.675) — same v2 dataset/hyperparameters, augmentation OFF. Used for the overfitting figure: train loss → 0.076 while val loss diverges to ~0.23 after ep 34 (classic overfitting). Controlled A/B vs the with-aug run on identical data (supersedes the old v1 no-aug curve). Plot: `runs/unet_no_augmentation_v2_20260614_131100/plots/loss.png`
+- [x] v1 reference runs: `unet_with_augmentation_20260531_143449` (best ep 47), `unet_baseline_20260531_143022` (v1 no-aug, 30-frame)
 
-### Report (Project 1)
-- [x] Report structure defined (`Project1_Report_v1_docx.docx` — template/outline stage)
-- [x] Introduction and problem statement written
-- [x] Project goals and scope written
-- [x] Background section headings defined (content TBD)
+### Deep Learning — SAM2Rad (Route C) ✓ COMPLETE
+- [x] Repo cloned, `bone_seg` dataset registered in `known_datasets.py`
+- [x] `bone_seg.yaml` config (SAM2 tiny, 1 class, 10 tokens, 100 epochs)
+- [x] `prepare_sam2rad_data.py` — converts CSV+masks to Train/Test folder structure
+- [x] **v3 training (canonical)**: 100 epochs, val every epoch; best `runs/sam2rad_bone_seg_v3/model_epoch=85-val_dice=0.69.ckpt`, evaluate.py Dice = 0.6480
+- [x] v2 training (superseded reference): `model_epoch=79`, evaluate.py Dice = 0.6585 — within noise of v3
+- [x] `evaluate.py` — standalone evaluation with all 5 metrics + overlays
+- [x] `plot_sam2rad_training.py` — reads CSVLogger; merges version_6 (ep 0–37) + version_7 (ep 38–99) for full curve
+- [x] CSVLogger added to `train.py` (saves per-epoch metrics to `logs/csv_metrics/`)
+- [x] `pl.seed_everything` added to `train.py` for reproducible future runs
+
+### Evaluation ✓ COMPLETE
+- [x] Both models evaluated on all **60 Patient 2 frames** with identical metric implementations
+- [x] Per-sample CSVs + summary CSVs + overlay figures saved for U-Net v2 + SAM2Rad v3
+- [x] Report figures regenerated from v3 ep85: `fig_metrics_comparison.png`, `fig_65_best_cases.png`, `fig_65_worst_cases.png`
+- [x] SAM2Rad training-curve plots (full 0–99) in `runs/sam2rad_bone_seg_v3_eval_plots/`
 
 ---
 
-## In progress
+## Remaining tasks (this week)
 
-### Preprocessing Pipeline
-- [ ] **Phase 5 — Unified API + comparison driver** (`preprocessing_api.py`, `compare_preprocessing.py`)
-  - Single `preprocess(img, method, **kwargs)` entry point across all modules
-  - Comparison driver: run all methods through existing segmentation pipeline, score Dice/IoU/Hausdorff vs ground-truth masks
-
-### Labeling
-- [ ] Visual overlay review of all existing masks (check for leakage/errors)
-- [ ] Flag uncertain/low-quality masks in `notes` column of CSV
-
-### Report (Project 1)
-- [ ] Background & Literature Review — filling in content under existing headings
-- [ ] Materials & Methods — documenting the segmentation pipeline formally
-- [ ] Results section — requires finished masks + qualitative examples
-
----
-
-## Next up
-
-### Immediate (before model training)
-- [ ] Build Phase 5: `preprocessing_api.py` + `compare_preprocessing.py`
-- [ ] Run comparison driver on Patient 1 frames; pick best preprocessing combination by Dice/IoU
-- [ ] Generate overlay preview images for all masks (image + mask side-by-side)
-- [ ] Flag uncertain/low-quality masks in `notes` column of CSV
-- [x] Patient-wise split confirmed: Patient 1 → train, Patient 2 → val/test (Patient 2 untouched until evaluation)
-- [x] `metadata_labeled.csv` verified clean (44 pairs)
-
-### Model Training — Route A (first priority)
-- [ ] Rewrite `train_unet.py` — architecture exists (`unet_model.py`, `dataset.py`) but training script uses random frame-level split and has no eval metrics; needs patient-wise split and full metric suite
-- [ ] DataLoader filters by patient from `metadata_labeled.csv` (Patient 1 → train, Patient 2 → val/test)
-- [ ] Loss: Dice + BCE (already implemented, keep)
-- [ ] Metrics: Dice, IoU, Precision/Recall, Hausdorff distance
-- [ ] Save quantitative metrics + overlay figures for report
-
-### Model Training — Route B/C (secondary, time permitting)
-- [ ] Route B: UltraSAM fine-tuning setup
-- [ ] Route C: SAM2Rad-style / prompt-based segmentation
-- [ ] Compare both against U-Net baseline
-
-### Report (Project 1) — remaining sections
-- [ ] Fill Background & Literature Review content
-- [ ] Write Materials & Methods (segmentation pipeline details)
-- [ ] Write Evaluation Methodology
-- [ ] Write Results (after U-Net baseline is done)
-- [ ] Write Discussion + Conclusion
-
-### Future — Project 2 (3D Reconstruction)
-- [ ] 3D point-cloud / surface reconstruction from bone masks
-- [ ] Approximate frame stacking (if controlled acquisition)
-- [ ] Pose-aware reconstruction if tracking data becomes available
-- [ ] Sensorless learned pose estimation (long-term)
-- [ ] Fracture detection / visualization from reconstructed surface
+### Project 2 — next steps
+- [ ] Milestone 2: Extract zygomatic arch surface from CT (mesh/point cloud)
+- [ ] Milestone 3: Initial rough alignment + rigid ICP to CT surface
+- [ ] Milestone 4: Quantitative evaluation (mean/median/RMSE/P95 surface distances)
+- [ ] Milestone 5 (optional): Compare manual vs U-Net vs SAM2Rad masks; Δ sensitivity analysis
 
 ---
 
 ## Key decisions made
 
-1. **Staged strategy:** Full sensorless 3D reconstruction is too ambitious as the first step given current data scale. Project 1 = 2D segmentation. Project 2 = 3D reconstruction.
-
-2. **Segmentation target:** The visible cortical hyperechoic bone interface in the ultrasound B-scan — not the full anatomical bone volume.
-
-3. **First model = plain 2D U-Net.** Must be working before attempting UltraSAM or SAM2Rad.
-
-4. **Patient-wise splitting is mandatory.** Never split by frame randomly — adjacent cine frames from the same patient must stay in the same split. Proposed: Patient 1 → train, Patient 2 → test.
-
-5. **Mask cleaning is currently disabled** in the segmentation CLI (commented out at line ~685). Region growing output is used directly. Re-enable by uncommenting that block — there is no `--use_cleaning` flag.
-
-6. **Crop coordinates are hard-coded** (y=[100,700], x=[200,800]). Needs to be made configurable per patient/scan in a future improvement.
-
-7. **`metadata_labeled.csv` is the source of truth** for all training. Never train from raw file-system traversal alone.
-
-8. **Raw DICOMs are never overwritten.** All processing outputs go to separate folders.
-
-9. **Report frames the work honestly:** This is a research proof-of-concept pipeline, not a clinical tool. Segmentation is the necessary prerequisite before reconstruction and fracture analysis.
+1. **Staged strategy:** Project 1 = 2D segmentation. Project 2 = 3D reconstruction.
+2. **Segmentation target:** Visible cortical hyperechoic bone interface — not full bone volume.
+3. **Two-route comparison completed:** Route A (U-Net ✓) + Route C (SAM2Rad ✓). Route B (UltraSAM) skipped due to deadline.
+4. **Patient-wise splitting only.** Patient 1 (83 frames) → train, Patient 2 (60 frames) → val/test.
+5. **Patient 2 dual use:** serves as both val (checkpoint selection) and test (final evaluation). Must disclose in report.
+6. **Online augmentation** used for U-Net — nearly eliminated overfitting.
+7. **SAM2Rad transfer learning** — frozen encoder, LoRA decoder fine-tuning. No manual prompts — uses learned class tokens.
+8. **UltraSAM skipped** — too heavy (OpenMMLab framework, Python 3.8 env, COCO conversion) for remaining time.
+9. **Hausdorff comparison caveat** — U-Net at 512px, SAM2Rad at 1024px. Normalize by image diagonal for fair comparison.
 
 ---
 
-## Known issues / watch-outs
+## Known issues / limitations to disclose in report
 
-- Crop coordinates may not generalize to all frames, patients, or scanner exports
-- Region growing can leak into bright non-bone structures (especially without cleaning)
-- Snake refinement may fail on weak or fragmented bone edges
-- Mask thickness is artificial (controlled by dilation radius, not true anatomy)
-- No external pose/tracking data currently available → sensorless reconstruction is a future challenge
+- Only 2 patients — Patient 2 is simultaneously val and test set (no truly held-out test)
+- 60 Patient 2 evaluation frames is still a relatively small test set from a single patient
+- Crop coordinates hard-coded (y=[100,700], x=[200,800]) — may not generalize to new patients/scanners
+- Hausdorff computed at different image scales — normalized comparison needed
+- SAM2Rad does not use manually placed seed points — purely data-driven via class tokens
+- Classical segmentation pipeline parameters tuned per-frame — not fully automated
 
 ---
 
@@ -176,12 +225,24 @@ The project is in the preprocessing expansion stage. A physics-aware preprocessi
 | File | Purpose |
 |------|---------|
 | `ultrasound_bone_segmentation_cli.py` | Classical interactive bone mask labeling tool |
-| `run_patient1_by_index.py` | Batch runner for Patient 1 segmentation |
-| `build_metadata_labeled.py` | Auto-builds `metadata_labeled.csv` from folder |
-| `metadata_labeled.csv` | Ground-truth labeled pairs for ML training (44 rows) |
-| `dataset_structure.md` | Dataset folder layout reference |
-| `Project1_Report_v1_docx.docx` | Report draft (template/outline stage) |
-| `Notebooks/fourier_analysis.ipynb` | Phase 1 Fourier analysis — calibrates filter parameters |
-| `Bone Segmentation/Preprocessing/frequency_filters.py` | Phase 2 FFT-based LP/HP/BP/notch filters |
-| `Bone Segmentation/Preprocessing/svd_denoising.py` | Phase 3 global SVD + patch PCA denoising |
-| `Bone Segmentation/Preprocessing/wavelet_denoising.py` | Phase 4 wavelet denoising (VisuShrink + BayesShrink) |
+| `run_patient1_by_index.py` | Runner for any patient |
+| `Pre-processing/build_metadata_labeled.py` | Builds `metadata_labeled.csv` |
+| `Dataset/metadata_labeled.csv` | Source of truth for ML training |
+| `Deep Learning.../dataset.py` | Shared crop-aware PyTorch Dataset |
+| `Deep Learning.../augmentation.py` | Online augmentation |
+| `Deep Learning.../UNet/train.py` | U-Net training (config-driven) |
+| `Deep Learning.../UNet/evaluate.py` | U-Net evaluation on any patient split |
+| `Deep Learning.../UNet/configs/default.yaml` | U-Net training config |
+| `Deep Learning.../SAM2Rad/train.py` | SAM2Rad training (modified for Patient2 val) |
+| `Deep Learning.../SAM2Rad/evaluate.py` | SAM2Rad evaluation with all 5 metrics |
+| `Deep Learning.../SAM2Rad/sam2rad/configs/bone_seg.yaml` | SAM2Rad config |
+| `Deep Learning.../runs/unet_with_augmentation_v2_20260612_143014/` | Best U-Net run (v2, 60 val frames) |
+| `Deep Learning.../runs/unet_with_augmentation_20260531_143449/` | v1 U-Net run (30 val frames, reference) |
+| `Bone Segmentation/runs/sam2rad_bone_seg_v3/` | SAM2Rad v3 checkpoints (best ep85 + last) |
+| `Bone Segmentation/runs/sam2rad_bone_seg_v3_eval_ep85/` | SAM2Rad v3 evaluation results (canonical) |
+| `Bone Segmentation/runs/sam2rad_bone_seg_v3_eval_plots/` | SAM2Rad v3 training curves (merged 0–99) |
+| `Bone Segmentation/runs/sam2rad_bone_seg_v2_eval_ep79/` | SAM2Rad v2 evaluation (superseded reference) |
+| `Deep Learning.../prepare_sam2rad_data.py` | Converts CSV+masks to SAM2Rad format |
+| `Deep Learning.../plot_training.py` | U-Net training curve plots |
+| `Deep Learning.../SAM2Rad/plot_sam2rad_training.py` | SAM2Rad training curves (parses wandb binary) |
+| `report_figures/` | Final report figures (metrics comparison, overlay cases) |

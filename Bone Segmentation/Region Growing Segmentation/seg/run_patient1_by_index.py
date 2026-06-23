@@ -83,11 +83,14 @@ def _build_index(img_dir: Path, mask_dir: Path) -> dict:
     }
 
 
-def _ensure_index(index_path: Path, refresh: bool) -> dict:
+def _ensure_index(index_path: Path, refresh: bool,
+                  img_dir_override: Path = None, mask_dir_override: Path = None) -> dict:
+    default_img_dir  = REPO_ROOT / "Dataset" / "Patient1" / "IMG_frames"
+    default_mask_dir = REPO_ROOT / "Dataset" / "Patient1" / "Masks"
+
     if refresh or (not index_path.exists()):
-        # default Patient1 paths
-        img_dir = REPO_ROOT / "Dataset" / "Patient1" / "IMG_frames"
-        mask_dir = REPO_ROOT / "Dataset" / "Patient1" / "Masks"
+        img_dir  = img_dir_override  or default_img_dir
+        mask_dir = mask_dir_override or default_mask_dir
         if not img_dir.exists():
             raise FileNotFoundError(f"Image folder not found: {img_dir}")
         mask_dir.mkdir(parents=True, exist_ok=True)
@@ -100,15 +103,12 @@ def _ensure_index(index_path: Path, refresh: bool) -> dict:
     if "dataset_root" not in data or "mask_root" not in data or "images" not in data:
         raise ValueError(f"Index file missing required keys: {index_path}")
 
-    # If the index file exists but has no images (e.g. placeholder file),
-    # rebuild it from the folder so the runner works out of the box.
     if not data["images"]:
-        img_dir = REPO_ROOT / Path(data["dataset_root"])
-        mask_dir = REPO_ROOT / Path(data["mask_root"])
+        img_dir  = img_dir_override  or REPO_ROOT / Path(data["dataset_root"])
+        mask_dir = mask_dir_override or REPO_ROOT / Path(data["mask_root"])
         if not img_dir.exists():
-            # Fall back to the default Patient1 paths
-            img_dir = REPO_ROOT / "Dataset" / "Patient1" / "IMG_frames"
-            mask_dir = REPO_ROOT / "Dataset" / "Patient1" / "Masks"
+            img_dir  = default_img_dir
+            mask_dir = default_mask_dir
         mask_dir.mkdir(parents=True, exist_ok=True)
 
         data = _build_index(img_dir, mask_dir)
@@ -448,7 +448,15 @@ def main() -> int:
     parser.add_argument(
         "--refresh_index",
         action="store_true",
-        help="Rebuild index from Dataset/Patient1/IMG_frames and overwrite JSON.",
+        help="Rebuild index from the patient IMG_frames folder and overwrite JSON.",
+    )
+    parser.add_argument(
+        "--patient_dir",
+        type=str,
+        default="",
+        help="Patient folder under Dataset (e.g. Patient2). "
+             "When set, IMG_frames and Masks are resolved from Dataset/<patient_dir>/. "
+             "Also auto-sets --index_json to <repo_root>/<patient_dir>_image_index.json.",
     )
     parser.add_argument(
         "--python_exe",
@@ -496,8 +504,24 @@ def main() -> int:
     args.reuse_meta_path = ""
     args.output_overlay_path = ""
 
+    img_dir_override  = None
+    mask_dir_override = None
+    if args.patient_dir:
+        img_dir_override  = REPO_ROOT / "Dataset" / args.patient_dir / "IMG_frames"
+        mask_dir_override = REPO_ROOT / "Dataset" / args.patient_dir / "Masks"
+        mask_dir_override.mkdir(parents=True, exist_ok=True)
+        if args.index_json == str(INDEX_PATH_DEFAULT):
+            args.index_json = str(REPO_ROOT / f"{args.patient_dir}_image_index.json")
+        args.refresh_index = True
+        print(f"Patient dir: {args.patient_dir}")
+        print(f"IMG frames:  {img_dir_override}")
+        print(f"Masks:       {mask_dir_override}")
+        print(f"Index file:  {args.index_json}\n")
+
     index_path = Path(args.index_json).expanduser()
-    index = _ensure_index(index_path, refresh=args.refresh_index)
+    index = _ensure_index(index_path, refresh=args.refresh_index,
+                          img_dir_override=img_dir_override,
+                          mask_dir_override=mask_dir_override)
 
     img_root = REPO_ROOT / Path(index["dataset_root"])
     mask_root = REPO_ROOT / Path(index["mask_root"])

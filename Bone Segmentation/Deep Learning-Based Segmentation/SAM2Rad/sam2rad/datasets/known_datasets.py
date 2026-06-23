@@ -1,0 +1,213 @@
+# Description: this file registers commonly used datasets by their names.
+# bone_seg dataset added for facial ultrasound bone segmentation (Patient1/Patient2 split).
+import warnings
+
+import kornia as K
+import torch
+import torch.nn.functional as F
+from torchvision import io
+
+from . import BaseDataset, TestDataset
+from .registry import register_dataset
+
+warnings.filterwarnings("ignore")
+
+
+@register_dataset("default_segmentation")
+class SegmentationDataset(BaseDataset):
+    def __init__(self, img_files, gt_files, mode, config):
+        super().__init__(img_files, gt_files, config, mode)
+
+        self.trn_aug = None
+
+
+@register_dataset("shoulder")
+class SegmentationDataset(BaseDataset):
+    def __init__(self, img_files, gt_files, mode, config):
+        super().__init__(img_files, gt_files, config, mode)
+
+        self.trn_aug = K.augmentation.AugmentationSequential(
+            K.augmentation.RandomHorizontalFlip(p=0.2),
+            K.augmentation.RandomVerticalFlip(p=0.2),
+            K.augmentation.RandomAffine(degrees=90, translate=(0.1, 0.1), p=0.5),
+            data_keys=["input", "mask"],
+        )
+
+    def remap_labels(self, gt):
+        return (gt > 0).long()
+
+
+@register_dataset("wrist")
+class WristScans(BaseDataset):
+    def __init__(self, img_files, gt_files, config, mode):
+        super().__init__(img_files, gt_files, config, mode)
+
+        # Define custom augmentations here
+        self.trn_aug = K.augmentation.AugmentationSequential(
+            K.augmentation.RandomAffine(degrees=90, translate=(0.1, 0.1), p=0.5),
+            data_keys=["input", "mask"],
+        )
+
+    def remap_labels(self, gt):
+        return (gt > 0).long()
+
+
+@register_dataset("hip")
+class Hip(BaseDataset):
+    def __init__(self, img_files, gt_files, config, mode):
+        super().__init__(img_files, gt_files, config, mode)
+
+    def remap_labels(self, gt):
+        return (gt > 0).long()
+
+
+@register_dataset("3dus_chop")
+class Hip3DChopDataset(BaseDataset):
+    # Map RGB values to class IDs
+    label_to_class_id = {
+        (255, 0, 0): 1,  # Red -> Class 0
+        (0, 255, 0): 2,  # Green -> Class 1
+        (0, 0, 255): 3,  # Blue -> Class 2
+    }
+
+    def __init__(self, img_files, gt_files, config, mode):
+        super().__init__(img_files, gt_files, config, mode)
+
+        self.trn_aug = K.augmentation.AugmentationSequential(
+            K.augmentation.RandomHorizontalFlip(p=0.5),
+            K.augmentation.RandomVerticalFlip(p=0.5),
+            K.augmentation.RandomAffine(degrees=30, translate=(0.1, 0.1), p=0.5),
+            data_keys=["input", "mask"],
+        )
+
+    @staticmethod
+    def remap_labels(gt: torch.Tensor) -> torch.Tensor:  # type: ignore
+        """
+        Remap RGB labels to class IDs.
+        Assumes `gt` is a tensor of shape (3, H, W) or (
+        H, W, 3) where each pixel is an RGB tuple.
+        """
+        # If the input is in shape (3, H, W), we need to permute it to (H, W, 3)
+        if gt.shape[0] == 3:
+            gt = gt.permute(1, 2, 0)  # Change from (3, H, W) to (H, W, 3)
+
+        # Now proceed with the original logic
+        class_map = torch.zeros(gt.shape[:2], dtype=torch.long)
+        for color, class_id in Hip3DChopDataset.label_to_class_id.items():
+            match = (gt == torch.tensor(color, dtype=gt.dtype)).all(dim=-1)
+            class_map[match] = class_id
+        return class_map
+
+
+@register_dataset("3dus_chop_test")
+class ChopTestDataset(Hip3DChopDataset):
+    """
+    Returns images without any augmentation.
+    """
+
+    def __getitem__(self, index):
+        img_orig = self.read_image(self.img_files[index])
+        img = img_orig.float() / 255.0
+        gt = self.read_mask(self.gt_files[index])
+        gt = self.remap_labels(gt).long()
+        img = (img - self.mean) / self.std
+        img = self.resize(img[None], order=1)
+        input_size = img.shape[2:]
+        img = self.pad(img)[0]
+        # convert to one-hot
+        gt = F.one_hot(gt.long(), num_classes=self.num_classes + 1).permute(
+            2, 0, 1
+        )  # (C+1, H, W)
+        # remove background class
+        gt = gt[1:]  # (C, H, W)
+
+        boxes = self.masks_to_boxes(gt)
+
+        if gt.ndim == 3:
+            gt = gt.squeeze(0)
+
+        return (
+            img_orig.permute(1, 2, 0),
+            img,
+            gt,
+            input_size,
+            boxes,
+            self.img_files[index],
+        )
+
+
+@register_dataset("bone_seg")
+class BoneSegDataset(BaseDataset):
+    """
+    Facial ultrasound bone segmentation dataset.
+    Masks are binary 0/1 PNGs (0=background, 1=bone cortex).
+    Images are grayscale PNGs (auto-converted to RGB by BaseDataset.read_image).
+    """
+
+    def __init__(self, img_files, gt_files, config, mode):
+        super().__init__(img_files, gt_files, config, mode)
+
+        self.trn_aug = K.augmentation.AugmentationSequential(
+            K.augmentation.RandomHorizontalFlip(p=0.5),
+            K.augmentation.RandomAffine(
+                degrees=15, translate=(0.05, 0.05), shear=0, p=0.4, align_corners=False
+            ),
+            K.augmentation.RandomBrightness(brightness=(0.8, 1.2), p=0.4),
+            K.augmentation.RandomContrast(contrast=(0.8, 1.2), p=0.4),
+            data_keys=["input", "mask"],
+            random_apply=(2,),
+        )
+
+    def remap_labels(self, gt):
+        # Masks are already 0/1 — ensure long dtype for one-hot encoding
+        return (gt > 0).long()
+
+    @staticmethod
+    def read_image(path):
+        img = io.read_image(path)
+        if img.size(0) == 1:
+            img = img.repeat(3, 1, 1)  # grayscale → RGB
+        return img
+
+
+@register_dataset("acdc")
+class ACDCDataset(BaseDataset):
+    def __init__(self, img_files, gt_files, config, mode):
+        super().__init__(img_files, gt_files, config, mode)
+
+        self.trn_aug = K.augmentation.AugmentationSequential(
+            K.augmentation.RandomAffine(
+                degrees=30, translate=(0.2, 0.2), shear=0, p=0.5, align_corners=False
+            ),
+            K.augmentation.RandomHorizontalFlip(p=0.5),
+            K.augmentation.RandomVerticalFlip(p=0.5),
+            data_keys=["input", "mask"],
+            random_apply=(2,),
+        )
+
+    @staticmethod
+    def read_image(path):
+        img = io.read_image(path)
+        if img.size(0) == 1:
+            img = img.repeat(3, 1, 1)
+        return img
+
+    @staticmethod
+    def read_mask(path):
+        mask = io.read_image(path)
+        return mask
+
+
+@register_dataset("acdc_test")
+class ACDCTestDataset(TestDataset):
+    @staticmethod
+    def read_image(path):
+        img = io.read_image(path)
+        if img.size(0) == 1:
+            img = img.repeat(3, 1, 1)
+        return img
+
+    @staticmethod
+    def read_mask(path):
+        mask = io.read_image(path)
+        return mask

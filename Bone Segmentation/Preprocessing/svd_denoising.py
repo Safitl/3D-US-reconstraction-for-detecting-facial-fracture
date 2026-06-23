@@ -32,14 +32,20 @@ rank_from_gap(img, n_search)
 apply_svd_filter(img, method, **kwargs)    — unified entry point
 """
 
+import re as _re
 import numpy as np
 
 # ── Default parameters ─────────────────────────────────────────────────────────
 SVD_RANK_DEFAULT        = 30    # global SVD: singular vectors to keep
 PCA_N_COMPONENTS        = 6     # patch PCA: principal components to keep
-PCA_PATCH_SIZE          = 16    # patch side length (pixels)
-PCA_STRIDE              = 8     # patch step (50 % overlap at default patch size)
+PCA_PATCH_SIZE          = 16    # default patch side length (pixels)
 ENERGY_FRAC_DEFAULT     = 0.90  # rank_from_energy target
+
+# Pattern that matches all named rectangular-patch variants, e.g.
+#   patch_svd_square_32x32 / patch_svd_horizontal_16x64 / patch_svd_vertical_64x16
+_PATCH_SVD_RE = _re.compile(
+    r'^patch_svd_(?:square|horizontal|vertical)_(\d+)x(\d+)$'
+)
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -58,34 +64,38 @@ def _restore_dtype(result_f32: np.ndarray, original: np.ndarray) -> np.ndarray:
     return result_f32
 
 
-def _extract_patches(img: np.ndarray, patch_size: int, stride: int):
+def _extract_patches(img: np.ndarray,
+                     patch_h: int, patch_w: int,
+                     stride_h: int, stride_w: int):
     """
-    Extract all (patch_size x patch_size) patches with the given stride.
-    Returns patches as a (N, patch_size*patch_size) matrix and the
+    Extract all (patch_h × patch_w) patches with the given strides.
+    Returns patches as a (N, patch_h*patch_w) matrix and the
     (row, col) top-left corner of each patch.
+    Supports rectangular patches for directional denoising experiments.
     """
     H, W = img.shape
     positions, patches = [], []
-    for r in range(0, H - patch_size + 1, stride):
-        for c in range(0, W - patch_size + 1, stride):
+    for r in range(0, H - patch_h + 1, stride_h):
+        for c in range(0, W - patch_w + 1, stride_w):
             positions.append((r, c))
-            patches.append(img[r:r + patch_size, c:c + patch_size].ravel())
+            patches.append(img[r:r + patch_h, c:c + patch_w].ravel())
     return np.array(patches, dtype=np.float32), positions
 
 
 def _reconstruct_from_patches(patches: np.ndarray, positions: list,
-                               img_shape: tuple, patch_size: int) -> np.ndarray:
+                               img_shape: tuple,
+                               patch_h: int, patch_w: int) -> np.ndarray:
     """
     Reconstruct an image from (possibly denoised) patches by averaging
-    overlapping regions.  Handles any stride implicitly via the positions list.
+    overlapping regions.  Handles any stride and rectangular shape implicitly.
     """
     H, W = img_shape
     accum  = np.zeros((H, W), dtype=np.float64)
     counts = np.zeros((H, W), dtype=np.float64)
     for patch_vec, (r, c) in zip(patches, positions):
-        patch = patch_vec.reshape(patch_size, patch_size)
-        accum[r:r + patch_size, c:c + patch_size]  += patch
-        counts[r:r + patch_size, c:c + patch_size] += 1.0
+        patch = patch_vec.reshape(patch_h, patch_w)
+        accum[r:r + patch_h, c:c + patch_w]  += patch
+        counts[r:r + patch_h, c:c + patch_w] += 1.0
     mask   = counts > 0
     result = np.zeros((H, W), dtype=np.float32)
     result[mask] = (accum[mask] / counts[mask]).astype(np.float32)
@@ -175,59 +185,62 @@ def svd_denoise(img: np.ndarray,
 # ── Patch PCA denoising ────────────────────────────────────────────────────────
 
 def pca_patch_denoise(img: np.ndarray,
-                      n_components: int = PCA_N_COMPONENTS,
-                      patch_size:   int = PCA_PATCH_SIZE,
-                      stride:       int = PCA_STRIDE) -> np.ndarray:
+                      n_components: int  = PCA_N_COMPONENTS,
+                      patch_h:      int  = PCA_PATCH_SIZE,
+                      patch_w:      int  = PCA_PATCH_SIZE,
+                      stride_h:     int  = None,
+                      stride_w:     int  = None) -> np.ndarray:
     """
     Patch-based PCA denoising with overlapping reconstruction.
+    Supports rectangular patches for directional denoising experiments.
 
     Algorithm
     ---------
-    1. Extract all (patch_size x patch_size) patches with the given stride.
+    1. Extract all (patch_h × patch_w) patches with the given strides.
     2. Centre each patch by subtracting its mean (remove local DC).
     3. Compute PCA on the patch matrix; project onto the top n_components
        eigenvectors and reconstruct (low-rank approximation in patch space).
     4. Add the mean back to each denoised patch.
     5. Average overlapping patches to reconstruct the full image.
 
-    Compared to global SVD, patch PCA is more spatially local — it suppresses
-    speckle while better preserving fine ridge detail at the cost of being slower.
-
     Parameters
     ----------
     img          : grayscale image, uint8 or float32
-    n_components : PCA components to keep per patch. More components = less
-                   denoising; fewer = more aggressive smoothing.  Default: 6.
-    patch_size   : patch side length in pixels. Default: 16.
-    stride       : patch step in pixels. Default: 8 (50 % overlap).
+    n_components : PCA components to keep per patch. Default: 6.
+    patch_h      : patch height in pixels. Default: 16.
+    patch_w      : patch width in pixels. Default: 16.
+    stride_h     : vertical step. Default: patch_h // 2 (50 % overlap).
+    stride_w     : horizontal step. Default: patch_w // 2 (50 % overlap).
 
     Returns
     -------
     Denoised image in the same dtype/range as input.
     """
     img_f = _as_float32(img)
-    patches, positions = _extract_patches(img_f, patch_size, stride)
+
+    if stride_h is None:
+        stride_h = max(1, patch_h // 2)
+    if stride_w is None:
+        stride_w = max(1, patch_w // 2)
+
+    patches, positions = _extract_patches(img_f, patch_h, patch_w,
+                                          stride_h, stride_w)
 
     if len(patches) == 0:
         return _restore_dtype(img_f, img)
 
-    # Centre patches
-    means   = patches.mean(axis=1, keepdims=True)
+    means     = patches.mean(axis=1, keepdims=True)
     patches_c = patches - means
 
-    # PCA via SVD of the centred patch matrix
-    # patches_c: (N_patches, patch_size^2)
-    # We want components in feature space, so SVD of patches_c.T or use economy SVD
     n_components = min(n_components, patches_c.shape[0], patches_c.shape[1])
     _, s, Vt = np.linalg.svd(patches_c, full_matrices=False)
 
-    # Project onto top components and reconstruct
-    components    = Vt[:n_components]                        # (k, patch_size^2)
-    scores        = patches_c @ components.T                 # (N, k)
-    patches_clean = scores @ components + means              # (N, patch_size^2)
+    components    = Vt[:n_components]
+    scores        = patches_c @ components.T
+    patches_clean = scores @ components + means
 
     result = _reconstruct_from_patches(patches_clean, positions,
-                                       img_f.shape, patch_size)
+                                       img_f.shape, patch_h, patch_w)
     return _restore_dtype(np.clip(result, 0.0, 1.0), img)
 
 
@@ -301,7 +314,13 @@ def svd_scree(img: np.ndarray,
 
 # ── Unified entry point ────────────────────────────────────────────────────────
 
-_VALID_METHODS = ('svd_global', 'svd_patch')
+_VALID_METHODS = (
+    'svd_global',
+    'svd_patch',
+    'patch_svd_square_HxW',       # e.g. patch_svd_square_32x32
+    'patch_svd_horizontal_HxW',   # e.g. patch_svd_horizontal_16x64
+    'patch_svd_vertical_HxW',     # e.g. patch_svd_vertical_64x16
+)
 
 
 def apply_svd_filter(img: np.ndarray, method: str, **kwargs) -> np.ndarray:
@@ -311,11 +330,18 @@ def apply_svd_filter(img: np.ndarray, method: str, **kwargs) -> np.ndarray:
     Parameters
     ----------
     img    : grayscale image (uint8 or float32)
-    method : 'svd_global' | 'svd_patch'
+    method : one of
+               'svd_global'                  — global rank-k SVD
+               'svd_patch'                   — default 16×16 patch PCA
+               'patch_svd_square_NxN'        — square patch, e.g. 32x32
+               'patch_svd_horizontal_HxW'    — wide patch,  e.g. 16x64
+               'patch_svd_vertical_HxW'      — tall patch,  e.g. 64x16
     kwargs : override any default parameter
-
-              svd_global : rank
-              svd_patch  : n_components, patch_size, stride
+               svd_global              : rank
+               svd_patch               : n_components, patch_h, patch_w,
+                                         stride_h, stride_w
+               patch_svd_*_HxW         : n_components, stride_h, stride_w
+                                         (patch dims are parsed from name)
 
     Returns
     -------
@@ -324,14 +350,28 @@ def apply_svd_filter(img: np.ndarray, method: str, **kwargs) -> np.ndarray:
     Examples
     --------
     >>> out = apply_svd_filter(img, 'svd_global', rank=20)
-    >>> out = apply_svd_filter(img, 'svd_patch', n_components=4, patch_size=16)
+    >>> out = apply_svd_filter(img, 'svd_patch', n_components=4)
+    >>> out = apply_svd_filter(img, 'patch_svd_square_32x32')
+    >>> out = apply_svd_filter(img, 'patch_svd_horizontal_16x64')
     """
     if method == 'svd_global':
         keys = ('rank',)
         return svd_denoise(img, **{k: kwargs[k] for k in keys if k in kwargs})
+
     if method == 'svd_patch':
-        keys = ('n_components', 'patch_size', 'stride')
+        keys = ('n_components', 'patch_h', 'patch_w', 'stride_h', 'stride_w')
         return pca_patch_denoise(img, **{k: kwargs[k] for k in keys if k in kwargs})
+
+    # Named rectangular-patch variants: patch_svd_{shape}_{H}x{W}
+    m = _PATCH_SVD_RE.match(method)
+    if m:
+        patch_h = int(m.group(1))
+        patch_w = int(m.group(2))
+        keys = ('n_components', 'stride_h', 'stride_w')
+        extra = {k: kwargs[k] for k in keys if k in kwargs}
+        return pca_patch_denoise(img, patch_h=patch_h, patch_w=patch_w, **extra)
+
     raise ValueError(
-        f"Unknown method '{method}'. Valid options: {_VALID_METHODS}"
+        f"Unknown method '{method}'. "
+        f"Named patch variants follow the pattern: patch_svd_{{square|horizontal|vertical}}_HxW"
     )

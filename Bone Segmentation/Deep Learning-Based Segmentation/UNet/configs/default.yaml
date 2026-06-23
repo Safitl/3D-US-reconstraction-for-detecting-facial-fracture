@@ -1,0 +1,35 @@
+run_name: unet_baseline
+
+model:
+  base_ch: 32
+  in_channels: 1
+  out_channels: 1
+
+data:
+  csv_path: ../../../Dataset/metadata_labeled.csv
+  base_dir: ../../../
+  train_patients: [Patient1]
+  val_patients: [Patient2]
+  val_scans: null          # list of scan IDs to use as val when val_patients unavailable
+  img_size: [512, 512]
+
+training:
+  epochs: 100
+  batch_size: 4
+  lr: 0.001
+  scheduler_patience: 10
+  scheduler_factor: 0.5
+
+augmentation:
+  horizontal_flip_p: 0.5
+  vertical_flip_p: 0.0
+  rotation_max_angle: 15
+  rotation_p: 0.5
+  brightness: 0.2
+  contrast: 0.2
+  brightness_contrast_p: 0.5
+  noise_std: 0.02
+  noise_p: 0.3
+
+output:
+  runs_dir: ../runs        # relative to UNet/ folder

@@ -1,0 +1,40 @@
+descripton: "config file for building SAM-like models."
+
+image_encoder: "sam2_tiny_hiera"
+mask_decoder: "sam2_lora_mask_decoder"
+prompt_predictor: "sam2_high_res_ppn" 
+sam_checkpoint: "weights/sam2_hiera_tiny.pt"
+
+# image_encoder: vit_tiny_adapter
+# mask_decoder: lora_mask_decoder
+# prompt_predictor: mobile_sam_high_res_ppn
+# sam_checkpoint: "/home/wahd/mppm/weights/mobile_sam.pt"
+
+# image_encoder: sam_vit_b
+# mask_decoder: sam_mask_decoder
+# prompt_predictor: sam_vitb_high_res_ppn
+# sam_checkpoint: "weights/sam_vit_b_01ec64.pth"
+
+wandb_project_name: "acdc"
+
+dataset:
+  name: acdc
+  root: /home/wahd/datasets/ACDC/ACDCPreprocessed
+  image_size: 1024
+  split: 0.0526 # training split
+  seed: 42
+  batch_size: 4
+  num_workers: 4
+  num_classes: 3
+  num_tokens: 10
+
+training:
+  max_epochs: 200
+  save_path: checkpoints/ACDC
+  resume: checkpoints/last.ckpt
+
+
+inference:
+  name: acdc_test
+  root: /home/wahd/datasets/ACDC/ACDCPreprocessed
+  checkpoint_path: checkpoints/last.ckpt

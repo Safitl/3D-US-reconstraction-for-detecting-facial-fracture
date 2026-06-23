@@ -1,0 +1,42 @@
+run_name: unet_no_augmentation_v2
+
+# Identical to the v2 with-augmentation run
+# (runs/unet_with_augmentation_v2_20260612_143014/config.yaml) EXCEPT every
+# augmentation probability is 0 -> build_train_augmentation() returns None, so
+# training runs with NO augmentation. This makes the no-aug overfitting figure a
+# controlled A/B against the with-aug run on the SAME v2 dataset (60 Patient2
+# frames, relabeled), rather than the old v1 (30-frame) baseline.
+
+model:
+  base_ch: 32
+  in_channels: 1
+  out_channels: 1
+
+data:
+  csv_path: ../../../Dataset/metadata_labeled.csv
+  base_dir: ../../../
+  train_patients: [Patient1]
+  val_patients: [Patient2]
+  val_scans: null
+  img_size: [512, 512]
+
+training:
+  epochs: 100
+  batch_size: 4
+  lr: 0.001
+  scheduler_patience: 10
+  scheduler_factor: 0.5
+
+augmentation:
+  horizontal_flip_p: 0.0
+  vertical_flip_p: 0.0
+  rotation_max_angle: 0
+  rotation_p: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  brightness_contrast_p: 0.0
+  noise_std: 0.0
+  noise_p: 0.0
+
+output:
+  runs_dir: ../runs

@@ -10,12 +10,32 @@
 **3D Ultrasound Reconstruction for Detecting Facial Fractures**  
 A two-part research pipeline developed as a Final Project A/B at the Technion, Electrical Engineering Faculty.
 
-- **Project 1 (current):** Preprocessing and 2D bone segmentation in facial ultrasound frames
-- **Project 2 (future):** 3D reconstruction and fracture analysis from segmented bone masks
+- **Project 1 (COMPLETE):** Preprocessing and 2D bone segmentation in facial ultrasound frames
+- **Project 2 (ACTIVE):** Sparse 3D reconstruction and CT-guided alignment of the zygomatic arch surface
 
-The long-term goal is a non-ionizing, portable, low-cost alternative to CT for initial or repeated facial fracture assessment. The immediate engineering goal is a reliable, reproducible 2D bone segmentation pipeline that produces binary bone masks from freehand ultrasound B-scans.
+The long-term goal is a non-ionizing, portable, low-cost alternative to CT for initial or repeated facial fracture assessment.
 
-**We are currently in Project 1.** Do not attempt to implement 3D reconstruction until segmentation is stable and evaluated.
+**Project 1 is COMPLETE (report submitted 2026-06-06). Project 2 is now active.**
+
+### Project 2 scope
+CT-guided sparse 3D reconstruction and alignment — NOT a full dense sensorless reconstruction.
+No external probe tracking exists, so z is estimated from frame order × assumed spacing Δ.
+CT is used as the anatomical reference and evaluation target (rigid ICP alignment).
+
+**Clinical data:**
+- Case 1 (Patient 1): healthy left zygomatic arch US + CT
+- Case 2 (Patient 2): right fractured zygomatic arch + contralateral healthy arch US + CT
+  - scan `image_172731958799` — labeled frames
+  - scan `image_441560463491` — labeled frames
+  - Total: **60 labeled frames** across both scans (expanded from 30 in v1)
+
+### Project 2 milestones
+1. ✅ Milestone 1: Extract bone surface points from 2D masks → sparse 3D PLY  
+   Script: `3D-Reconstruction/build_point_cloud.py`
+2. ⬜ Milestone 2: Extract zygomatic arch surface from CT (mesh/point cloud)
+3. ⬜ Milestone 3: Initial rough alignment + rigid ICP to CT surface
+4. ⬜ Milestone 4: Quantitative evaluation (mean/median/RMSE/P95 surface distances)
+5. ⬜ Milestone 5 (optional): Compare manual vs U-Net vs SAM2Rad masks; Δ sensitivity analysis
 
 ---
 
@@ -25,7 +45,7 @@ The long-term goal is a non-ionizing, portable, low-cost alternative to CT for i
 3D-US-reconstraction-for-detecting-facial-fracture
 ```
 
-Note: "reconstraction" is a typo in the original repo name. Do not rename mid-project — it would break paths and collaborator references.
+Note: "reconstraction" is a typo in the original repo name. Do not rename mid-project.
 
 ---
 
@@ -36,10 +56,11 @@ Note: "reconstraction" is a typo in the original repo name. Do not rename mid-pr
 | Language | Python 3 |
 | Image I/O | OpenCV (`cv2`), `pydicom` |
 | Classical segmentation | `scikit-image` (`flood`, `active_contour`), `scipy`, `skimage.morphology` |
-| Deep learning (planned) | PyTorch |
-| Data management | pandas, CSV |
+| Deep learning | PyTorch, PyTorch Lightning |
+| DL training framework | Custom config-driven (YAML), `wandb` (SAM2Rad only, offline mode) |
+| Data management | pandas, CSV, JSON |
 | Visualization | matplotlib, OpenCV overlays |
-| File formats | PNG (frames + masks), DICOM (raw), JSON (metadata per mask), CSV (dataset index) |
+| File formats | PNG (frames + masks), DICOM (raw), JSON (metadata per mask), CSV (dataset index), YAML (configs) |
 
 ---
 
@@ -47,149 +68,206 @@ Note: "reconstraction" is a typo in the original repo name. Do not rename mid-pr
 
 ```
 3D-US-reconstraction-for-detecting-facial-fracture/
-├── patient1_image_index.json         ← maps IMG_frames filenames to index; lives at repo root
-└── Dataset/
-    ├── dataset_structure.md
-    ├── metadata_labeled.csv          ← source of truth for ML training
-    └── Patient1/
-        ├── DCM_frames/               ← raw DICOM files (READ ONLY — never modify)
-        │   ├── image_<id>.dcm
-        │   └── ...
-        ├── IMG_frames/               ← extracted PNG frames
-        │   ├── image_<id>.png
-        │   ├── image_<id>_f000.png   ← cine-derived frames use _fNNN suffix
-        │   └── ...
-        └── Masks/
-            ├── image_<id>_mask.png   ← binary mask (0 = background, 255 = bone)
-            ├── image_<id>_meta.json  ← seed points + segmentation params used
-            └── ...
+├── 3D-Reconstruction/
+│   ├── build_point_cloud.py      ← Milestone 1: masks → sparse 3D PLY
+│   └── output/                   ← generated PLY files and overview figures
+├── patient1_image_index.json
+├── Patient2_image_index.json
+├── Pre-processing/
+│   ├── build_metadata_labeled.py
+│   ├── dcm_to_png_batch.py
+│   └── dcm_extract_frames_manual.py
+├── Dataset/
+│   ├── metadata_labeled.csv          ← source of truth for ML training
+│   ├── Patient1/
+│   │   ├── DCM_frames/               ← READ ONLY
+│   │   ├── IMG_frames/               ← ~83 frames
+│   │   └── Masks/                    ← ~83 binary masks + meta JSONs
+│   └── Patient2/
+│       ├── DCM_frames/               ← READ ONLY
+│       ├── IMG_frames/               ← extracted frames
+│       └── Masks/                    ← 60 labeled masks + meta JSONs
+└── Bone Segmentation/
+    └── Deep Learning-Based Segmentation/
+        ├── dataset.py                ← shared, crop-aware PyTorch Dataset
+        ├── augmentation.py           ← shared online augmentation
+        ├── plot_training.py          ← training curve plots (--run_dir)
+        ├── prepare_sam2rad_data.py   ← converts CSV+masks → SAM2Rad format
+        ├── UNet/
+        │   ├── unet_model.py         ← 2D U-Net architecture
+        │   ├── train.py              ← config-driven training
+        │   ├── evaluate.py           ← standalone evaluation script
+        │   └── configs/default.yaml
+        ├── SAM2Rad/                  ← cloned from github.com/aswahd/SamRadiology
+        │   ├── train.py              ← modified for Patient2 val set
+        │   ├── evaluate.py           ← evaluation with all 5 metrics
+        │   ├── checkpoints/          ← saved model checkpoints
+        │   ├── weights/sam2_hiera_tiny.pt
+        │   └── sam2rad/
+        │       ├── configs/bone_seg.yaml
+        │       └── datasets/known_datasets.py  ← bone_seg registered here
+        └── runs/
+            ├── unet_baseline_20260531_143022/              ← v1 no-aug (30 val frames)
+            ├── unet_with_augmentation_20260531_143449/     ← v1 U-Net (30 val frames)
+            ├── unet_with_augmentation_v2_20260612_143014/  ← BEST U-Net v2 (60 val frames)
+            └── unet_no_augmentation_v2_20260614_131100/    ← v2 no-aug baseline (overfitting figure, same v2 data)
+Bone Segmentation/
+└── runs/
+    ├── sam2rad_bone_seg_v3/                  ← CANONICAL v3 checkpoints (best ep85 + last)
+    ├── sam2rad_bone_seg_v3_eval_ep85/        ← BEST SAM2Rad v3 (epoch 85) — canonical results
+    ├── sam2rad_bone_seg_v3_eval_plots/       ← v3 training curves (merged ep 0–99)
+    ├── sam2rad_bone_seg_v2_eval_ep79/        ← SAM2Rad v2 (epoch 79) — superseded reference
+    └── sam2rad_bone_seg_v2_eval_ep39/        ← SAM2Rad v2 epoch 39 (comparison)
 ```
-
-Additional patients will follow the same structure as `Patient1/`.
 
 ---
 
-## Key scripts
+## Final evaluation results (for report)
 
-| Script | Role |
-|--------|------|
-| `ultrasound_bone_segmentation_cli.py` | Main interactive labeling tool — runs on a single frame |
-| `run_patient1_by_index.py` | Batch runner: segments Patient 1 frames by index |
-| `build_metadata_labeled.py` | Scans folder structure, builds/updates `metadata_labeled.csv` |
+**Canonical results — evaluated on all 60 Patient 2 frames** (metadata_labeled.csv: 143 total, Patient1=83, Patient2=60). U-Net = v2, SAM2Rad = v3 (clean 100-epoch run, val every epoch):
+
+| Model | Dice | IoU | Precision | Recall | Hausdorff (px) | HD (%diag) | Scale |
+|-------|------|-----|-----------|--------|----------------|------------|-------|
+| U-Net + Augmentation (ep 28) | **0.674 ± 0.155** | **0.527 ± 0.160** | **0.648 ± 0.162** | **0.730 ± 0.192** | 128.0 ± 76.5 | 17.7% | 512px |
+| SAM2Rad (epoch 85, v3) | 0.648 ± 0.158 | 0.498 ± 0.162 | 0.631 ± 0.173 | 0.694 ± 0.177 | 191.3 ± 124.9 | **13.2%** | 1024px |
+
+Hausdorff normalized by diagonal (512px→724px, 1024px→1448px): SAM2Rad better spatial accuracy (13.2% vs 17.7%).
+
+**SAM2Rad run-to-run variance:** v2 ep79 = 0.6585, v3 ep85 = 0.6480 on the same 60 frames — ~0.01 Dice apart (≈½ SEM), statistically equivalent. Training was unseeded; v3 is canonical because number + curve come from the same per-epoch-validated run. `pl.seed_everything` added afterward for reproducible future runs.
+
+**v1 results — 30 frames (reference):** U-Net Dice=0.678, SAM2Rad Dice=0.671 (epoch 59, HD%diag: U-Net=12.3%, SAM2Rad=7.6%)
 
 ---
 
-## How to run the segmentation tool
+## Model architectures (for report)
+
+### U-Net
+- 2D U-Net, 3 encoder levels, base_ch=32 → channels: 32→64→128, bottleneck=256
+- ~1.9M parameters, trained from scratch
+- Input: 512×512, 1-channel grayscale
+- Loss: 0.5×BCE + 0.5×Dice loss
+- Optimizer: Adam lr=1e-3, ReduceLROnPlateau (patience=10)
+- Augmentation: horizontal flip, rotation ±15°, brightness/contrast, Gaussian noise
+- **v2 best run**: `unet_with_augmentation_v2_20260612_143014`, epoch 28, val Dice 0.6742 on 60 Patient 2 frames
+
+### SAM2Rad
+- Base: SAM2 Tiny Hiera (Meta), pretrained on SA-1B
+- Transfer learning: encoder FROZEN (38M params), fine-tuned: LoRA decoder (rank=8) + prompt learner + class tokens (6.2M params)
+- Learnable prompts: 1 class × 10 tokens × 256 dims (no manual seed prompts)
+- Input: 1024×1024, 3-channel (grayscale→RGB)
+- Loss: Dice + Focal (1.0 + 10.0) + box regression + object score
+- Optimizer: AdamW lr=1e-4, CosineAnnealingLR
+- v3 batch_size=1 + accumulate_grad_batches=4 (effective batch 4; fits 4 GB GPU), validation **every epoch**
+- **v3 best checkpoint (canonical)**: `runs/sam2rad_bone_seg_v3/model_epoch=85-val_dice=0.69.ckpt` (val_dice 0.6942 torchmetrics), evaluate.py Dice 0.6480 on 60 Patient 2 frames
+- v3 was resumed once (interrupted at ep37→99); checkpoint saving froze at global-best ep85, so `last.ckpt` == ep85 weights
+- v2 (superseded): `model_epoch=79` evaluate.py Dice 0.6585 — within noise of v3
+- CSVLogger + `pl.seed_everything` in train.py; v3 curve merges logs/csv_metrics/version_6 (ep0–37) + version_7 (ep38–99)
+
+---
+
+## Key scripts and how to run them
 
 ```bash
-python ultrasound_bone_segmentation_cli.py \
-  --image_path Dataset/Patient1/IMG_frames/image_<id>.png \
-  --output_mask_path Dataset/Patient1/Masks/image_<id>_mask.png \
-  --show
+# Rebuild metadata CSV
+python "Pre-processing/build_metadata_labeled.py" --dataset_root Dataset
+
+# Segmentation labeling tool (interactive)
+python "Bone Segmentation/Region Growing Segmentation/seg/run_patient1_by_index.py"
+python "Bone Segmentation/Region Growing Segmentation/seg/run_patient1_by_index.py" --patient_dir Patient2
+
+# U-Net training
+python "Bone Segmentation/Deep Learning-Based Segmentation/UNet/train.py"
+python "Bone Segmentation/Deep Learning-Based Segmentation/UNet/train.py" --run_name my_name
+
+# U-Net evaluation on Patient 2
+python "Bone Segmentation/Deep Learning-Based Segmentation/UNet/evaluate.py" \
+  --checkpoint "Bone Segmentation/Deep Learning-Based Segmentation/runs/unet_with_augmentation_v2_20260612_143014/best_model.pth" \
+  --csv_path Dataset/metadata_labeled.csv --base_dir .
+
+# SAM2Rad training
+cd "Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad"
+set WANDB_MODE=offline
+python train.py --config sam2rad/configs/bone_seg.yaml
+
+# SAM2Rad evaluation (run from SAM2Rad/ folder) — canonical v3 ep85
+python evaluate.py --config sam2rad/configs/bone_seg.yaml \
+  --checkpoint ../../runs/sam2rad_bone_seg_v3/model_epoch=85-val_dice=0.69.ckpt \
+  --out_dir ../../runs/sam2rad_bone_seg_v3_eval_ep85
+
+# SAM2Rad training curves plot (run from SAM2Rad/ folder)
+python plot_sam2rad_training.py
+
+# Plot training curves
+python "Bone Segmentation/Deep Learning-Based Segmentation/plot_training.py" \
+  --run_dir "Bone Segmentation/Deep Learning-Based Segmentation/runs/<run_name>"
 ```
 
-Optional flags:
-```
---max_seeds      (default: 5)
---tolerance      (default: 20)
---snap_window    (default: 7)
---snake_dilate   (default: 3)
---y_band         (default: 35)
---min_area       (default: 200)
---open_r         (default: 1)
---close_w        (default: 25)
---use_cleaning   (flag does NOT exist — cleaning is disabled by commented-out code at line ~685 of the CLI; re-enable by uncommenting that block, not via a flag)
-```
+---
 
-## How to rebuild the metadata CSV
+## Segmentation pipeline parameters (for report — Materials & Methods)
 
-```bash
-python build_metadata_labeled.py
-```
-
-Verify output: `Dataset/metadata_labeled.csv` should list all image-mask pairs with correct relative paths.
+The classical segmentation pipeline applies to each frame:
+1. **Preprocessing:** CLAHE (clip=0.01) + Gaussian blur (7×7 default)
+2. **Crop:** y=[100,700], x=[200,800] → 600×600 working region
+3. **Seed selection:** Interactive clicks, snapped to nearest bright ridge (window=7px)
+4. **Region growing:** `skimage.segmentation.flood` with per-seed spatial constraints
+   - `seed_x_band` — horizontal flood window (±N cols per seed)
+   - `seed_y_band` — symmetric vertical window (±N rows per seed)
+   - `seed_y_band_up` — asymmetric upward-only restriction
+5. **Morphological cleaning:** opening (speckle removal) + horizontal closing (gap bridging)
+6. **Pre-snake dilation:** isotropic disk expansion to bridge diagonal gaps on curved bone
+7. **Active contour (snake):** Sobel edge-based, LoRA refinement
+   - `snake_alpha` (tension), `snake_beta` (stiffness), `snake_sigma` (edge smoothing)
+8. **Post-processing trims:** `post_trim_up` / `post_trim_down` — hard clip above/below interpolated seed line; uses linear interpolation → follows bone curve smoothly
+9. **Output:** Binary PNG (0/255) + meta JSON with all parameters logged
 
 ---
 
 ## Architectural decisions
 
-1. **Segmentation before reconstruction.** No 3D work until 2D masks are reliable and evaluated. This is a fixed project-level decision.
-
-2. **The segmentation target is the visible cortical bone interface** — the hyperechoic bright line at the bone surface in the B-scan. It is NOT the full anatomical bone volume.
-
-3. **Plain 2D U-Net is the first model.** It must be implemented and producing baseline results before any foundation model (UltraSAM, SAM2Rad) is attempted.
-
-4. **Patient-wise splitting only.** Never split randomly by frame. Adjacent cine frames from the same patient/scan must stay in the same split. Planned split: Patient 1 → train, Patient 2 → test.
-
-5. **`metadata_labeled.csv` is the single source of truth** for what counts as labeled data. Never train by crawling the filesystem directly.
-
-6. **Masks are binary PNG, uint8, values 0 and 255.** No other format. No float masks.
-
-7. **All arrays and volumes use float32** unless there is a specific reason otherwise.
-
-8. **Raw DICOMs are never modified.** `DCM_frames/` is read-only. All pipeline outputs go to separate folders.
-
-9. **Crop coordinates are currently hard-coded** (y=[100,700], x=[200,800]) in the segmentation CLI. They work for Patient 1 but are not guaranteed to generalize. Raise a warning before applying to a new patient without verifying the crop.
-
-10. **Mask cleaning is currently disabled.** The morphological cleaning step in the segmentation CLI is commented out (line ~685). There is no `--use_cleaning` flag — re-enable by uncommenting that block. Do not silently re-enable it without flagging it.
+1. **Segmentation before reconstruction.** No 3D work until 2D masks are complete.
+2. **Segmentation target:** Visible cortical hyperechoic bone interface only.
+3. **Two-route comparison completed:** U-Net (Route A) + SAM2Rad (Route C). UltraSAM (Route B) skipped.
+4. **Patient-wise split only.** Patient 1 → train (83 frames), Patient 2 → val/test (60 frames).
+5. **Patient 2 dual use:** val for model selection AND test for final evaluation. Disclose in report.
+6. **Online augmentation** (U-Net) — nearly eliminated overfitting.
+7. **Transfer learning** (SAM2Rad) — frozen SAM2 encoder, fine-tuned decoder only.
+8. **`metadata_labeled.csv` is the single source of truth** for labeled data.
+9. **Masks are binary PNG, uint8, 0/255.** No float masks.
+10. **Raw DICOMs never modified.** DCM_frames/ is read-only.
 
 ---
 
-## Coding conventions
-
-- Use relative paths everywhere. Never hard-code absolute paths.
-- All new scripts must accept `--input` / `--output` style CLI arguments via `argparse`.
-- Log what you're doing: print the frame being processed, masks being saved, and any warnings.
-- Do not silently overwrite existing masks. Warn if a mask file already exists and require `--overwrite` to proceed.
-- Variable names: `image` for raw loaded array, `enhanced` after preprocessing, `mask` for binary output, `overlay` for visualization.
-- Keep preprocessing, segmentation, and I/O in separate functions — not one large main block.
-- Every script that modifies the dataset must update or be compatible with `metadata_labeled.csv`.
-
----
-
-## Constraints — things to never do
+## Constraints
 
 - **Never modify files under `DCM_frames/`.**
 - **Never commit raw patient data to a public repository.**
-- **Never use random frame-level train/test splits.** Always split by patient or scan.
-- **Never train a model using frames from the test patient**, even for sanity checks.
-- **Never produce masks in float format.** Masks are always uint8 PNG (0/255).
-- **Never rename the repository** mid-project without updating all internal path references.
+- **Never use random frame-level train/test splits.**
+- **Never train on Patient 2 frames.**
+- **Never produce float masks.**
 
 ---
 
-## Evaluation plan (Project 1)
+## Report structure (Project 1) — SUBMITTED 2026-06-06
 
-Metrics to compute on test set:
-- Dice coefficient
-- IoU (Jaccard index)
-- Precision and recall
-- Hausdorff distance (or mean contour distance) — important because the bone target is a thin line
+File: `Project1_Report_v1_docx.docx`  
+All sections written and submitted. v2 results (60 frames) generated after submission for reference.
 
-Qualitative outputs required:
-- Side-by-side overlay images (frame + predicted mask + ground-truth mask if available)
-- Failure case examples with notes
+**Results summary in report:**
+- Comparison table (both models on Patient 2, v2: 60 frames)
+- Training curves (loss, Dice plots) — U-Net from CSV, SAM2Rad from wandb binary via `plot_sam2rad_training.py`
+- Overlay figures: `report_figures/fig_65_best_cases.png`, `fig_65_worst_cases.png`
+- Hausdorff scale difference noted and normalized values reported
 
----
-
-## Report structure (Project 1)
-
-The report is `Project1_Report_v1_docx.docx`. Chapters:
-1. Introduction
-2. Project Goals and Scope
-3. Background and Literature Review
-4. Materials and Methods
-5. Evaluation Methodology
-6. Results
-7. Discussion
-8. Conclusions and Future Work
-9. Appendices
-
-The report should clearly frame this as a proof-of-concept research pipeline, not a clinical tool.
+**Key discussion points in report:**
+- U-Net competitive despite simpler architecture and no pretraining
+- SAM2Rad advantage: better normalized Hausdorff (boundary accuracy), less overfitting by design
+- Limitation: only 2 patients, Patient 2 used as both val and test
+- Future: UltraSAM (ultrasound-specific pretraining), 3D reconstruction (Project 2)
 
 ---
 
-## Literature reviewed (relevant papers)
+## Literature reviewed
 
 | Paper | Relevance |
 |-------|-----------|
@@ -197,12 +275,14 @@ The report should clearly frame this as a proof-of-concept research pipeline, no
 | Victoria et al. 2023 | Real-time octree-based 3D US reconstruction |
 | Dou et al. 2024 | Sensorless physics-guided DL reconstruction — future direction |
 | Solberg et al. 2011 | Classical freehand 3D US reconstruction algorithms |
+| SAM2 (Meta 2024) | Base model for SAM2Rad — Segment Anything Model 2 |
+| SAM2Rad (Wahd et al.) | Medical image segmentation with learnable prompts on SAM2 |
 
 ---
 
-## Session startup checklist (for Claude Code)
+## Session startup checklist
 
 1. Read this file (`CLAUDE.md`)
-2. Read `progress.md` — report what is done, in progress, and blocked
-3. Do not touch `DCM_frames/` for any reason
-4. Confirm the task for this session before writing any code
+2. Read `progress.md`
+3. Do not touch `DCM_frames/`
+4. Confirm task before writing code
