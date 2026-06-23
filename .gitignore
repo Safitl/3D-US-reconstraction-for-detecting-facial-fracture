@@ -39,6 +39,9 @@ Bone Segmentation/Deep Learning-Based Segmentation/SAM2Rad/debug_*.png
 3D-Reconstruction/output/
 compare_preprocessing_results/
 
+# Large notebook with embedded outputs (kept locally)
+Notebooks/fourier_analysis.ipynb
+
 # Stray output images
 segmentation_mask.png
 *.tmp
